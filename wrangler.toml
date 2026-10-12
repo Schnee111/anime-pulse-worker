@@ -3,12 +3,12 @@ main = "build/worker/shim.mjs"
 compatibility_date = "2024-04-03"
 
 [build]
-command = "cargo install -q worker-build && worker-build --release"
+command = "worker-build --release"
 
 [[kv_namespaces]]
 binding = "ANIME_KV"
-id = "anime_pulse_kv"
-preview_id = "anime_pulse_kv_preview"
+id = "5194b3ac8f664de4bbe1a89fb982275f"
+preview_id = "ab52264ad70f4f82b2e460d0e757874c"
 
 [triggers]
 crons = ["* * * * *"]

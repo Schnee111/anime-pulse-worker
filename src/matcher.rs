@@ -12,28 +12,56 @@ pub fn parse_release_title(raw_title: &str) -> Option<(String, u32)> {
     Some((title, episode))
 }
 
-/// Matches tracked anime title against candidate title using word token overlap.
-/// Handles differences like "Season 2" vs "2nd Season" or subtitle suffixes.
+fn stop_words() -> HashSet<&'static str> {
+    [
+        "season",
+        "2nd",
+        "3rd",
+        "4th",
+        "5th",
+        "part",
+        "sub",
+        "indo",
+        "subtitle",
+        "indonesia",
+        "episode",
+        "the",
+        "and",
+        "cour",
+    ]
+    .iter()
+    .copied()
+    .collect()
+}
+
+fn extract_significant_keywords(title: &str) -> HashSet<String> {
+    let re = Regex::new(r"(?i)[a-z0-9]+").unwrap();
+    let stops = stop_words();
+    re.find_iter(title)
+        .map(|m| m.as_str().to_lowercase())
+        .filter(|w| !stops.contains(w.as_str()))
+        .collect()
+}
+
+/// Matches tracked anime title against candidate title using keyword token overlap.
+/// Filters out generic terms like "season", "2nd", "3rd", "sub", "indo".
 pub fn matches_tracked(tracked_title: &str, candidate_title: &str) -> bool {
-    let re_word = Regex::new(r"(?i)[a-z0-9]{3,}").unwrap();
+    let kw_tracked = extract_significant_keywords(tracked_title);
+    let kw_candidate = extract_significant_keywords(candidate_title);
 
-    let words_tracked: HashSet<String> = re_word
-        .find_iter(tracked_title)
-        .map(|m| m.as_str().to_lowercase())
-        .collect();
+    let overlap = kw_tracked.intersection(&kw_candidate).count();
+    if overlap == 0 {
+        return false;
+    }
 
-    let words_candidate: HashSet<String> = re_word
-        .find_iter(candidate_title)
-        .map(|m| m.as_str().to_lowercase())
-        .collect();
-
-    let overlap = words_tracked.intersection(&words_candidate).count();
-
-    // If tracked has 1-2 words, need at least 1 match. If 3+, need at least 2 matching words.
-    if words_tracked.len() <= 2 {
+    if kw_tracked.len() <= 1 {
         overlap >= 1
-    } else {
+    } else if kw_tracked.len() == 2 {
         overlap >= 2
+    } else {
+        // For longer titles (3+ keywords), require at least 2 overlapping keywords
+        // and at least 35% overlap of the tracked keywords.
+        overlap >= 2 && ((overlap as f32 / kw_tracked.len() as f32) >= 0.35)
     }
 }
 
@@ -88,6 +116,14 @@ mod tests {
         assert!(matches_tracked(
             "FX Senshi Kurumi-chan",
             "FX Senshi Kurumi-chan"
+        ));
+        assert!(matches_tracked(
+            "Ao no Hako Season 2",
+            "Ao no Hako 2nd Season"
+        ));
+        assert!(!matches_tracked(
+            "Ao no Hako Season 2",
+            "Tensei Kizoku, Kantei Skill de Nariagaru 3rd Season"
         ));
         assert!(!matches_tracked(
             "Koori no Jouheki Season 2",
