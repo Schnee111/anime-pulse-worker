@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Rustfmt Check
+        run: cargo fmt --all -- --check
+
+      - name: Run Host Unit Tests
+        run: cargo test --lib --verbose
+
+      - name: Check Wasm Target
+        run: cargo check --target wasm32-unknown-unknown --verbose
+
+      - name: Clippy Check
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
