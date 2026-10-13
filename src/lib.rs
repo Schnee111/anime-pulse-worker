@@ -214,6 +214,26 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 r#"{"status":"healthy","service":"anime-pulse-worker","runtime":"rust-wasm"}"#,
             )
         })
+        .post_async("/test-webhook", |_, ctx| async move {
+            let secret_res = ctx.env.secret("DISCORD_WEBHOOK_URL");
+            match secret_res {
+                Ok(sec) => {
+                    let url_str = sec.to_string();
+                    let test_release = vec![EpisodeRelease {
+                        anime_id: "test-id".into(),
+                        title: "Test Anime Diagnostic".into(),
+                        episode: 1,
+                        source: "Worker Diagnostic".into(),
+                        url: "https://samehadaku.li".into(),
+                    }];
+                    match discord::send_discord_webhook(&url_str, &test_release).await {
+                        Ok(_) => Response::ok(format!("Webhook sent successfully to: {}...", &url_str[..40])),
+                        Err(e) => Response::error(format!("Error sending webhook: {e:?}"), 500),
+                    }
+                }
+                Err(e) => Response::error(format!("Secret DISCORD_WEBHOOK_URL error: {e:?}"), 500),
+            }
+        })
         .get_async("/tracked", |_, ctx| async move {
             let kv = ctx.env.kv("ANIME_KV")?;
             let tracked: Vec<TrackedAnime> = kv
