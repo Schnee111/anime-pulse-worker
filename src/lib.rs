@@ -227,7 +227,10 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                         url: "https://samehadaku.li".into(),
                     }];
                     match discord::send_discord_webhook(&url_str, &test_release).await {
-                        Ok(_) => Response::ok(format!("Webhook sent successfully to: {}...", &url_str[..40])),
+                        Ok(_) => Response::ok(format!(
+                            "Webhook sent successfully to: {}...",
+                            &url_str[..40]
+                        )),
                         Err(e) => Response::error(format!("Error sending webhook: {e:?}"), 500),
                     }
                 }
