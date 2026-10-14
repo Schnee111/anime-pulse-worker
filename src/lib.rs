@@ -97,6 +97,24 @@ pub fn default_tracked_list() -> Vec<TrackedAnime> {
             last_episode: 2,
             url: "https://otakudesu.blog/anime/zombie-saga-sub-indo/".into(),
         },
+        TrackedAnime {
+            id: "sekai-saikyou-no-majo".into(),
+            title: "Sekai Saikyou no Majo, Hajimemashita".into(),
+            last_episode: 2,
+            url: "https://otakudesu.blog/anime/sekai-hajimemashita-sub-indo/".into(),
+        },
+        TrackedAnime {
+            id: "chitose-kun-ramune-p2".into(),
+            title: "Chitose-kun wa Ramune Bin no Naka Part 2".into(),
+            last_episode: 2,
+            url: "https://otakudesu.blog/anime/chitose-ramune-bin-naka-p2-sub-indo/".into(),
+        },
+        TrackedAnime {
+            id: "tantei-wa-mou-shindeiru-s2".into(),
+            title: "Tantei wa Mou, Shindeiru. Season 2".into(),
+            last_episode: 2,
+            url: "https://otakudesu.blog/anime/tante-mou-shindeiru-s2-sub-indo/".into(),
+        },
     ]
 }
 
