@@ -19,6 +19,8 @@ pub struct TrackedAnime {
     pub title: String,
     pub last_episode: u32,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,32 +30,42 @@ pub struct EpisodeRelease {
     pub episode: u32,
     pub source: String,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
 }
 
 // Discord Webhook structs
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordEmbedAuthor {
     pub name: String,
     pub url: Option<String>,
     pub icon_url: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordEmbedFooter {
     pub text: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordEmbedMedia {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordEmbed {
     pub author: Option<DiscordEmbedAuthor>,
     pub title: String,
+    pub url: Option<String>,
     pub description: String,
     pub color: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<DiscordEmbedMedia>,
     pub footer: Option<DiscordEmbedFooter>,
     pub timestamp: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordWebhookPayload {
     pub embeds: Vec<DiscordEmbed>,
 }

@@ -1,6 +1,7 @@
 use crate::matcher::short_title;
 use crate::models::{
-    DiscordEmbed, DiscordEmbedAuthor, DiscordEmbedFooter, DiscordWebhookPayload, EpisodeRelease,
+    DiscordEmbed, DiscordEmbedAuthor, DiscordEmbedFooter, DiscordEmbedMedia, DiscordWebhookPayload,
+    EpisodeRelease,
 };
 use worker::*;
 
@@ -8,47 +9,44 @@ pub const SPECTRO_MINT: u32 = 7268279; // #6ee7b7
 pub const BOT_ICON: &str =
     "https://cdn.discordapp.com/avatars/1515769326639120586/52a3abbcf5977cf4355af9340d2819c5.png";
 
-/// Builds Discord webhook payload with Spectro Mint embed card and zero emoji
+/// Builds Discord webhook payload with Spectro Mint embed cards and horizontal landscape image preview
 pub fn build_embed_payload(
     releases: &[EpisodeRelease],
     timestamp_iso: &str,
 ) -> DiscordWebhookPayload {
-    let mut desc_lines = vec![
-        format!("`{timestamp_iso}`"),
-        "".to_string(),
-        "**New Episodes Detected**".to_string(),
-        "".to_string(),
-    ];
+    let mut embeds = Vec::new();
 
     for rel in releases {
-        let title_fmt = short_title(&rel.title, 32);
-        desc_lines.push(format!(
-            "• **`{title_fmt}`** : `Ep {}` · *{}*",
+        let title_fmt = short_title(&rel.title, 42);
+        let desc = format!(
+            "`{timestamp_iso}`\n\n• **Episode {}** Subtitle Indonesia\n• Sumber: *{}*\n\n*Edge watcher triggered · Cloudflare Worker (Rust)*",
             rel.episode, rel.source
-        ));
+        );
+
+        let image = rel
+            .image_url
+            .as_ref()
+            .map(|url| DiscordEmbedMedia { url: url.clone() });
+
+        embeds.push(DiscordEmbed {
+            author: Some(DiscordEmbedAuthor {
+                name: "Shorekeeper Anime · Edge Pulse Sentinel".to_string(),
+                url: Some("https://samehadaku.li".to_string()),
+                icon_url: Some(BOT_ICON.to_string()),
+            }),
+            title: format!("{title_fmt} · Episode {}", rel.episode),
+            url: Some(rel.url.clone()),
+            description: desc,
+            color: SPECTRO_MINT,
+            image,
+            footer: Some(DiscordEmbedFooter {
+                text: "Shorekeeper Edge Watcher · 1-Min Cloudflare Pulse".to_string(),
+            }),
+            timestamp: timestamp_iso.to_string(),
+        });
     }
 
-    desc_lines.push("".to_string());
-    desc_lines.push("*Edge watcher triggered · Cloudflare Worker (Rust)*".to_string());
-
-    let embed = DiscordEmbed {
-        author: Some(DiscordEmbedAuthor {
-            name: "Shorekeeper Anime · Edge Pulse Sentinel".to_string(),
-            url: Some("https://samehadaku.li".to_string()),
-            icon_url: Some(BOT_ICON.to_string()),
-        }),
-        title: "Anime Releases Updated".to_string(),
-        description: desc_lines.join("\n"),
-        color: SPECTRO_MINT,
-        footer: Some(DiscordEmbedFooter {
-            text: "Shorekeeper Edge Watcher · 1-Min Cloudflare Pulse".to_string(),
-        }),
-        timestamp: timestamp_iso.to_string(),
-    };
-
-    DiscordWebhookPayload {
-        embeds: vec![embed],
-    }
+    DiscordWebhookPayload { embeds }
 }
 
 /// Dispatches embed payload to Discord webhook URL via Cloudflare Fetch API

@@ -12,108 +12,126 @@ pub fn default_tracked_list() -> Vec<TrackedAnime> {
             title: "Koori no Jouheki Season 2".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/koori-jouheki-s2-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/a7ah5by0Ffw/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "ao-no-hako-s2".into(),
             title: "Ao no Hako Season 2".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/ao-hako-s2-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/uvvYMBLY-w4/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "yowaki-max-reijou".into(),
             title: "Yowaki Max Reijou nanoni, Ratsuwan Konyakusha-sama no Kake ni Notte Shimatta".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/yowaki-max-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/e41RGxVwJRs/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "tensei-shita-daiseijo".into(),
             title: "Tensei shita Daiseijo wa, Seijo de Aru Koto wo Hitakakusu".into(),
             last_episode: 3,
             url: "https://otakudesu.blog/anime/tensei-shita-daiseijo-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/9oBywQ403ZA/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "futsutsuka-na-akujo".into(),
             title: "Futsutsuka na Akujo dewa Gozaimasu ga".into(),
             last_episode: 11,
             url: "https://otakudesu.blog/anime/futsutsuka-akujo-gozaimasu-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/nR_vqhD2rGM/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "tempal-chikara".into(),
             title: "Tempal: Item no Chikara".into(),
             last_episode: 3,
             url: "https://otakudesu.blog/anime/tempal-chikara-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/e1Km0FqUZl0/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "fx-senshi-kurumi".into(),
             title: "FX Senshi Kurumi-chan".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/fx-senshi-kurumi-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/7rxIZ3z0S4s/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "saikyosoubi".into(),
             title: "Mezametara Saikyou Soubi to Uchuusenmochi Datta node, Ikkodate Mezashite Youhei toshite Jiyuu ni Ikitai".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/saikyosoubi-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/Z9ofT53sz2U/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "yasei-last-boss-s2".into(),
             title: "Yasei no Last Boss ga Arawareta! Season 2".into(),
             last_episode: 3,
             url: "https://otakudesu.blog/anime/yasei-last-bos-s2-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/KVT_ODZn9Ys/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "romelia-senki".into(),
             title: "Romelia Senki".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/romelia-senki-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/PxXPcoo8uGM/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "kyouran-reijou-nia-liston".into(),
             title: "Kyouran Reijou Nia Liston".into(),
-            last_episode: 1,
+            last_episode: 2,
             url: "https://otakudesu.blog/anime/kyouran-reijou-liston-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/gxG4vntLtbk/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "doumo-suki-na-majo".into(),
             title: "Doumo, Suki na Hito ni Horegusuri wo Irai sareta Majo desu.".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/doumo-suki-majo-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/hGRtocAh3iw/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "magical-explorer".into(),
             title: "Magical★Explorer".into(),
             last_episode: 3,
             url: "https://otakudesu.blog/anime/magic-explor-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/XqrBfyUNYZs/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "seitokai-ni-mo-ana-wa-aru".into(),
             title: "Seitokai ni mo Ana wa Aru!".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/seitokai-ana-aru-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/VTRVLnzhl90/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "zombie-sagashitemasu".into(),
             title: "#Zombie Sagashitemasu".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/zombie-saga-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/_0kVb8-uRSI/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "sekai-saikyou-no-majo".into(),
             title: "Sekai Saikyou no Majo, Hajimemashita".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/sekai-hajimemashita-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/snJZD9vxfHY/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "chitose-kun-ramune-p2".into(),
             title: "Chitose-kun wa Ramune Bin no Naka Part 2".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/chitose-ramune-bin-naka-p2-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/wC7FYPFHLeQ/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "tantei-wa-mou-shindeiru-s2".into(),
             title: "Tantei wa Mou, Shindeiru. Season 2".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/tante-mou-shindeiru-s2-sub-indo/".into(),
+            image_url: Some("https://img.youtube.com/vi/MghFONe--0Q/maxresdefault.jpg".into()),
         },
     ]
 }
@@ -162,6 +180,7 @@ pub async fn check_for_releases(tracked: &mut [TrackedAnime]) -> Result<Vec<Epis
                         episode: episode_num,
                         source: "Samehadaku API".into(),
                         url: post.link.clone(),
+                        image_url: item.image_url.clone(),
                     });
                 }
             }
@@ -238,11 +257,14 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 Ok(sec) => {
                     let url_str = sec.to_string();
                     let test_release = vec![EpisodeRelease {
-                        anime_id: "test-id".into(),
-                        title: "Test Anime Diagnostic".into(),
-                        episode: 1,
+                        anime_id: "ao-no-hako-s2".into(),
+                        title: "Ao no Hako Season 2".into(),
+                        episode: 3,
                         source: "Worker Diagnostic".into(),
                         url: "https://samehadaku.li".into(),
+                        image_url: Some(
+                            "https://img.youtube.com/vi/uvvYMBLY-w4/maxresdefault.jpg".into(),
+                        ),
                     }];
                     match discord::send_discord_webhook(&url_str, &test_release).await {
                         Ok(_) => Response::ok(format!(
