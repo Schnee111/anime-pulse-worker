@@ -154,6 +154,22 @@ pub fn default_tracked_list() -> Vec<TrackedAnime> {
     ]
 }
 
+/// Merges defaults into tracked list to seamlessly migrate legacy KV records
+/// that might be missing thumbnail_url or holding outdated image_urls.
+pub fn merge_tracked_defaults(tracked: &mut [TrackedAnime]) {
+    let defaults = default_tracked_list();
+    for item in tracked.iter_mut() {
+        if let Some(def) = defaults.iter().find(|d| d.id == item.id) {
+            if item.thumbnail_url.is_none() {
+                item.thumbnail_url = def.thumbnail_url.clone();
+            }
+            if item.image_url != def.image_url {
+                item.image_url = def.image_url.clone();
+            }
+        }
+    }
+}
+
 pub async fn check_for_releases(tracked: &mut [TrackedAnime]) -> Result<Vec<EpisodeRelease>> {
     let fetch_url =
         "https://samehadaku.li/wp-json/wp/v2/posts?per_page=15&_fields=id,date,title,link";
@@ -238,7 +254,9 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
         Ok(None) => {
             let default_list = default_tracked_list();
             if let Ok(json_str) = serde_json::to_string(&default_list) {
-                let _ = kv.put("tracked_anime", json_str).unwrap().execute().await;
+                if let Ok(put) = kv.put("tracked_anime", json_str) {
+                    let _ = put.execute().await;
+                }
             }
             default_list
         }
@@ -247,6 +265,8 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
             default_tracked_list()
         }
     };
+
+    merge_tracked_defaults(&mut tracked);
 
     let releases = match check_for_releases(&mut tracked).await {
         Ok(r) => r,
@@ -267,13 +287,17 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
             }
         };
 
-        if let Err(e) = discord::send_discord_webhook(&webhook_url, &releases).await {
-            worker::console_error!("Failed to send Discord webhook: {:?}", e);
-        }
-
-        if let Ok(json_str) = serde_json::to_string(&tracked) {
-            if let Ok(put) = kv.put("tracked_anime", json_str) {
-                let _ = put.execute().await;
+        // Only commit updated episode state to KV if Discord webhook succeeds
+        match discord::send_discord_webhook(&webhook_url, &releases).await {
+            Ok(_) => {
+                if let Ok(json_str) = serde_json::to_string(&tracked) {
+                    if let Ok(put) = kv.put("tracked_anime", json_str) {
+                        let _ = put.execute().await;
+                    }
+                }
+            }
+            Err(e) => {
+                worker::console_error!("Failed to send Discord webhook: {:?}", e);
             }
         }
     }
@@ -308,57 +332,95 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                         ),
                     }];
                     match discord::send_discord_webhook(&url_str, &test_release).await {
-                        Ok(_) => Response::ok(format!(
-                            "Webhook sent successfully to: {}...",
-                            &url_str[..40]
-                        )),
-                        Err(e) => Response::error(format!("Error sending webhook: {e:?}"), 500),
+                        Ok(_) => Response::ok("Webhook diagnostic test sent successfully"),
+                        Err(e) => {
+                            worker::console_error!("Error sending webhook: {:?}", e);
+                            Response::error("Failed to send webhook", 500)
+                        }
                     }
                 }
-                Err(e) => Response::error(format!("Secret DISCORD_WEBHOOK_URL error: {e:?}"), 500),
+                Err(e) => {
+                    worker::console_error!("Secret DISCORD_WEBHOOK_URL error: {:?}", e);
+                    Response::error("Missing webhook configuration", 500)
+                }
             }
         })
         .get_async("/tracked", |_, ctx| async move {
             let kv = match ctx.env.kv("ANIME_KV") {
                 Ok(store) => store,
-                Err(e) => return Response::error(format!("KV error: {:?}", e), 500),
+                Err(e) => {
+                    worker::console_error!("KV error: {:?}", e);
+                    return Response::error("Failed to access storage", 500);
+                }
             };
-            match kv.get("tracked_anime").text().await {
-                Ok(Some(t)) => {
-                    let mut resp = Response::ok(t)?;
+            let mut tracked = match kv.get("tracked_anime").json::<Vec<TrackedAnime>>().await {
+                Ok(Some(list)) => list,
+                Ok(None) => default_tracked_list(),
+                Err(e) => {
+                    worker::console_error!("Read error: {:?}", e);
+                    default_tracked_list()
+                }
+            };
+            merge_tracked_defaults(&mut tracked);
+
+            match serde_json::to_string(&tracked) {
+                Ok(json_str) => {
+                    let mut resp = Response::ok(json_str)?;
                     resp.headers_mut().set("Content-Type", "application/json")?;
                     Ok(resp)
                 }
-                Ok(None) => Response::ok("[]"),
-                Err(e) => Response::error(format!("Read error: {:?}", e), 500),
+                Err(e) => {
+                    worker::console_error!("Serialization error: {:?}", e);
+                    Response::error("Internal server error", 500)
+                }
             }
         })
         .post_async("/trigger", |_, ctx| async move {
             let kv = match ctx.env.kv("ANIME_KV") {
                 Ok(store) => store,
-                Err(e) => return Response::error(format!("KV error: {:?}", e), 500),
+                Err(e) => {
+                    worker::console_error!("KV error: {:?}", e);
+                    return Response::error("Failed to access storage", 500);
+                }
             };
             let mut tracked = match kv.get("tracked_anime").json::<Vec<TrackedAnime>>().await {
                 Ok(Some(list)) => list,
                 Ok(None) => default_tracked_list(),
-                Err(e) => return Response::error(format!("Error reading KV: {:?}", e), 500),
+                Err(e) => {
+                    worker::console_error!("Error reading KV: {:?}", e);
+                    return Response::error("Failed to read storage", 500);
+                }
             };
+            merge_tracked_defaults(&mut tracked);
 
             let releases = match check_for_releases(&mut tracked).await {
                 Ok(r) => r,
-                Err(e) => return Response::error(format!("Check error: {:?}", e), 500),
+                Err(e) => {
+                    worker::console_error!("Check error: {:?}", e);
+                    return Response::error("Failed to check releases", 500);
+                }
             };
 
             let count = releases.len();
             if !releases.is_empty() {
                 let webhook_url = match ctx.env.secret("DISCORD_WEBHOOK_URL") {
                     Ok(sec) => sec.to_string(),
-                    Err(e) => return Response::error(format!("Missing secret: {:?}", e), 500),
+                    Err(e) => {
+                        worker::console_error!("Missing secret: {:?}", e);
+                        return Response::error("Configuration error", 500);
+                    }
                 };
-                let _ = discord::send_discord_webhook(&webhook_url, &releases).await;
-                if let Ok(json_str) = serde_json::to_string(&tracked) {
-                    if let Ok(put) = kv.put("tracked_anime", json_str) {
-                        let _ = put.execute().await;
+                match discord::send_discord_webhook(&webhook_url, &releases).await {
+                    Ok(_) => {
+                        if let Ok(json_str) = serde_json::to_string(&tracked) {
+                            if let Ok(put) = kv.put("tracked_anime", json_str) {
+                                let _ = put.execute().await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        worker::console_error!("Failed to send webhook: {:?}", e);
+                        return Response::error("Failed to deliver notification", 502);
                     }
                 }
             }
