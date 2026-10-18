@@ -10,7 +10,8 @@ pub const BOT_ICON: &str =
     "https://cdn.discordapp.com/avatars/1515769326639120586/52a3abbcf5977cf4355af9340d2819c5.png";
 
 /// Builds a dedicated Discord webhook payload for a single episode release.
-/// Keeping each anime in its own message ensures full-width 16:9 landscape image display.
+/// Keeping each anime in its own message ensures full-width 16:9 landscape image display
+/// along with top-right portrait poster thumbnail.
 pub fn build_single_release_payload(
     rel: &EpisodeRelease,
     timestamp_iso: &str,
@@ -20,6 +21,11 @@ pub fn build_single_release_payload(
         "`{timestamp_iso}`\n\n• **Episode {}** Subtitle Indonesia\n• Sumber: *{}*\n\n*Edge watcher triggered · Cloudflare Worker (Rust)*",
         rel.episode, rel.source
     );
+
+    let thumbnail = rel
+        .thumbnail_url
+        .as_ref()
+        .map(|url| DiscordEmbedMedia { url: url.clone() });
 
     let image = rel
         .image_url
@@ -36,6 +42,7 @@ pub fn build_single_release_payload(
         url: Some(rel.url.clone()),
         description: desc,
         color: SPECTRO_MINT,
+        thumbnail,
         image,
         footer: Some(DiscordEmbedFooter {
             text: "Shorekeeper Edge Watcher · 1-Min Cloudflare Pulse".to_string(),
@@ -48,7 +55,7 @@ pub fn build_single_release_payload(
     }
 }
 
-/// Dispatches each release as a separate Discord message so each has its own clean embed & 16:9 image
+/// Dispatches each release as a separate Discord message so each has its own clean embed & dual visuals
 pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]) -> Result<()> {
     if releases.is_empty() {
         return Ok(());
@@ -101,6 +108,9 @@ mod tests {
             episode: 3,
             source: "Samehadaku API".into(),
             url: "https://samehadaku.li/ao-no-hako-s2-episode-3/".into(),
+            thumbnail_url: Some(
+                "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx170942-KKcLfQzV57nG.jpg".into(),
+            ),
             image_url: Some("https://img.youtube.com/vi/uvvYMBLY-w4/maxresdefault.jpg".into()),
         };
 
@@ -108,6 +118,11 @@ mod tests {
         assert_eq!(payload.embeds.len(), 1);
         let embed = &payload.embeds[0];
         assert_eq!(embed.title, "Ao no Hako Season 2 · Episode 3");
+        assert!(embed.thumbnail.is_some());
+        assert_eq!(
+            embed.thumbnail.as_ref().unwrap().url,
+            "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx170942-KKcLfQzV57nG.jpg"
+        );
         assert!(embed.image.is_some());
         assert_eq!(
             embed.image.as_ref().unwrap().url,

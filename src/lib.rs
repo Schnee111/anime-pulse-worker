@@ -12,161 +12,193 @@ pub fn default_tracked_list() -> Vec<TrackedAnime> {
             title: "Koori no Jouheki Season 2".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/koori-jouheki-s2-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx186497-uwPrNPphXvjP.jpg".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx186497-uwPrNPphXvjP.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/a7ah5by0Ffw/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "ao-no-hako-s2".into(),
             title: "Ao no Hako Season 2".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/ao-hako-s2-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx170942-KKcLfQzV57nG.jpg".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx170942-KKcLfQzV57nG.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/uvvYMBLY-w4/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "yowaki-max-reijou".into(),
             title: "Yowaki Max Reijou nanoni, Ratsuwan Konyakusha-sama no Kake ni Notte Shimatta".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/yowaki-max-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx200455-P3XStRQMJ7Di.png".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx200455-P3XStRQMJ7Di.png".into()),
+            image_url: Some("https://img.youtube.com/vi/e41RGxVwJRs/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "tensei-shita-daiseijo".into(),
             title: "Tensei shita Daiseijo wa, Seijo de Aru Koto wo Hitakakusu".into(),
             last_episode: 3,
             url: "https://otakudesu.blog/anime/tensei-shita-daiseijo-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx187402-ReKkLwFmMV3q.jpg".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx187402-ReKkLwFmMV3q.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/9oBywQ403ZA/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "futsutsuka-na-akujo".into(),
             title: "Futsutsuka na Akujo dewa Gozaimasu ga".into(),
             last_episode: 11,
             url: "https://otakudesu.blog/anime/futsutsuka-akujo-gozaimasu-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx188139-1qIJfWxym8FX.jpg".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx188139-1qIJfWxym8FX.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/nR_vqhD2rGM/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "tempal-chikara".into(),
             title: "Tempal: Item no Chikara".into(),
             last_episode: 3,
             url: "https://otakudesu.blog/anime/tempal-chikara-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx212888-NhyvqPt5aIuJ.jpg".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx212888-NhyvqPt5aIuJ.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/e1Km0FqUZl0/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "fx-senshi-kurumi".into(),
             title: "FX Senshi Kurumi-chan".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/fx-senshi-kurumi-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx206401-8cAebkI0i8BA.png".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx206401-8cAebkI0i8BA.png".into()),
+            image_url: Some("https://img.youtube.com/vi/7rxIZ3z0S4s/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "saikyosoubi".into(),
             title: "Mezametara Saikyou Soubi to Uchuusenmochi Datta node, Ikkodate Mezashite Youhei toshite Jiyuu ni Ikitai".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/saikyosoubi-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx186541-caYpLsLmbCh7.jpg".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx186541-caYpLsLmbCh7.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/Z9ofT53sz2U/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "yasei-last-boss-s2".into(),
             title: "Yasei no Last Boss ga Arawareta! Season 2".into(),
             last_episode: 3,
             url: "https://otakudesu.blog/anime/yasei-last-bos-s2-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx180523-FjvW1XByUNMK.jpg".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx180523-FjvW1XByUNMK.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/KVT_ODZn9Ys/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "romelia-senki".into(),
             title: "Romelia Senki".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/romelia-senki-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx180894-o3pz4DWFm3je.png".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx180894-o3pz4DWFm3je.png".into()),
+            image_url: Some("https://img.youtube.com/vi/PxXPcoo8uGM/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "kyouran-reijou-nia-liston".into(),
             title: "Kyouran Reijou Nia Liston".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/kyouran-reijou-liston-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx206949-4HYI3YuP0eLI.png".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx206949-4HYI3YuP0eLI.png".into()),
+            image_url: Some("https://img.youtube.com/vi/gxG4vntLtbk/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "doumo-suki-na-majo".into(),
             title: "Doumo, Suki na Hito ni Horegusuri wo Irai sareta Majo desu.".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/doumo-suki-majo-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx207191-VgkIzfH92WoZ.jpg".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx207191-VgkIzfH92WoZ.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/hGRtocAh3iw/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "magical-explorer".into(),
             title: "Magical★Explorer".into(),
             last_episode: 3,
             url: "https://otakudesu.blog/anime/magic-explor-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx169581-UlAviVH36Hxi.png".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx169581-UlAviVH36Hxi.png".into()),
+            image_url: Some("https://img.youtube.com/vi/XqrBfyUNYZs/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "seitokai-ni-mo-ana-wa-aru".into(),
             title: "Seitokai ni mo Ana wa Aru!".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/seitokai-ana-aru-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx191656-xFHtxM8SUTdU.png".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx191656-xFHtxM8SUTdU.png".into()),
+            image_url: Some("https://img.youtube.com/vi/VTRVLnzhl90/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "zombie-sagashitemasu".into(),
             title: "#Zombie Sagashitemasu".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/zombie-saga-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx199007-8R1HsnflnHJE.jpg".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx199007-8R1HsnflnHJE.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/_0kVb8-uRSI/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "sekai-saikyou-no-majo".into(),
             title: "Sekai Saikyou no Majo, Hajimemashita".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/sekai-hajimemashita-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx211778-0MXK5HqVFBYH.jpg".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx211778-0MXK5HqVFBYH.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/snJZD9vxfHY/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "chitose-kun-ramune-p2".into(),
             title: "Chitose-kun wa Ramune Bin no Naka Part 2".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/chitose-ramune-bin-naka-p2-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx180082-IZAlf06G2VVm.png".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx180082-IZAlf06G2VVm.png".into()),
+            image_url: Some("https://img.youtube.com/vi/wC7FYPFHLeQ/maxresdefault.jpg".into()),
         },
         TrackedAnime {
             id: "tantei-wa-mou-shindeiru-s2".into(),
             title: "Tantei wa Mou, Shindeiru. Season 2".into(),
             last_episode: 2,
             url: "https://otakudesu.blog/anime/tante-mou-shindeiru-s2-sub-indo/".into(),
-            image_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx128712-AlVwHbrugvj6.jpg".into()),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx128712-AlVwHbrugvj6.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/MghFONe--0Q/maxresdefault.jpg".into()),
         },
     ]
 }
 
-/// Core probe logic: queries Samehadaku REST API and detects new episodes
 pub async fn check_for_releases(tracked: &mut [TrackedAnime]) -> Result<Vec<EpisodeRelease>> {
+    let fetch_url =
+        "https://samehadaku.li/wp-json/wp/v2/posts?per_page=15&_fields=id,date,title,link";
+
     let headers = Headers::new();
     headers.set(
         "User-Agent",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     )?;
+    headers.set("Accept", "application/json")?;
     headers.set("Accept-Encoding", "gzip, deflate")?;
 
     let mut init = RequestInit::new();
     init.with_method(Method::Get);
     init.with_headers(headers);
 
-    let req = Request::new_with_init(
-        "https://samehadaku.li/wp-json/wp/v2/posts?per_page=15&_fields=id,date,title,link",
-        &init,
-    )?;
+    let req = Request::new_with_init(fetch_url, &init)?;
+    let mut resp = match Fetch::Request(req).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            worker::console_error!("Failed to fetch Samehadaku REST API: {:?}", e);
+            return Ok(Vec::new());
+        }
+    };
 
-    let mut resp = Fetch::Request(req).send().await?;
     if resp.status_code() != 200 {
-        worker::console_warn!(
-            "Samehadaku API responded with status {}",
+        worker::console_error!(
+            "Samehadaku API responded with non-200 status: {}",
             resp.status_code()
         );
         return Ok(Vec::new());
     }
 
-    let posts: Vec<SamehadakuPost> = resp.json().await?;
+    let body_str = resp.text().await?;
+    let posts: Vec<SamehadakuPost> = match serde_json::from_str(&body_str) {
+        Ok(p) => p,
+        Err(e) => {
+            worker::console_error!("Failed to parse Samehadaku posts JSON: {:?}", e);
+            return Ok(Vec::new());
+        }
+    };
+
     let mut detected_releases = Vec::new();
 
-    for post in posts {
+    for post in posts.iter() {
         let raw_title = &post.title.rendered;
         if let Some((parsed_title, episode_num)) = matcher::parse_release_title(raw_title) {
             for item in tracked.iter_mut() {
@@ -180,6 +212,7 @@ pub async fn check_for_releases(tracked: &mut [TrackedAnime]) -> Result<Vec<Epis
                         episode: episode_num,
                         source: "Samehadaku API".into(),
                         url: post.link.clone(),
+                        thumbnail_url: item.thumbnail_url.clone(),
                         image_url: item.image_url.clone(),
                     });
                 }
@@ -200,49 +233,54 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
         }
     };
 
-    // Load tracked anime from KV or initialize defaults
-    let mut tracked: Vec<TrackedAnime> = match kv.get("tracked_anime").json().await {
+    let mut tracked = match kv.get("tracked_anime").json::<Vec<TrackedAnime>>().await {
         Ok(Some(list)) => list,
-        _ => {
-            let defaults = default_tracked_list();
-            if let Ok(json_str) = serde_json::to_string(&defaults) {
-                let _ = kv.put("tracked_anime", json_str).map(|p| p.execute());
+        Ok(None) => {
+            let default_list = default_tracked_list();
+            if let Ok(json_str) = serde_json::to_string(&default_list) {
+                let _ = kv.put("tracked_anime", json_str).unwrap().execute().await;
             }
-            defaults
+            default_list
+        }
+        Err(e) => {
+            worker::console_error!("Error reading tracked_anime from KV: {:?}", e);
+            default_tracked_list()
         }
     };
 
-    match check_for_releases(&mut tracked).await {
-        Ok(releases) => {
-            if !releases.is_empty() {
-                worker::console_log!("Detected {} new releases!", releases.len());
-
-                // Save updated tracked anime to KV
-                if let Ok(json_str) = serde_json::to_string(&tracked) {
-                    if let Ok(put) = kv.put("tracked_anime", json_str) {
-                        let _ = put.execute().await;
-                    }
-                }
-
-                // Dispatch to Discord Webhook
-                if let Ok(webhook_url) = env.secret("DISCORD_WEBHOOK_URL") {
-                    let url_str = webhook_url.to_string();
-                    if let Err(e) = discord::send_discord_webhook(&url_str, &releases).await {
-                        worker::console_error!("Failed to send Discord webhook: {:?}", e);
-                    }
-                } else {
-                    worker::console_warn!("DISCORD_WEBHOOK_URL secret not configured");
-                }
-            }
-        }
+    let releases = match check_for_releases(&mut tracked).await {
+        Ok(r) => r,
         Err(e) => {
-            worker::console_error!("Error during scheduled release check: {:?}", e);
+            worker::console_error!("Error checking releases: {:?}", e);
+            return;
+        }
+    };
+
+    if !releases.is_empty() {
+        worker::console_log!("Detected {} new releases!", releases.len());
+
+        let webhook_url = match env.secret("DISCORD_WEBHOOK_URL") {
+            Ok(sec) => sec.to_string(),
+            Err(e) => {
+                worker::console_error!("Missing secret DISCORD_WEBHOOK_URL: {:?}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = discord::send_discord_webhook(&webhook_url, &releases).await {
+            worker::console_error!("Failed to send Discord webhook: {:?}", e);
+        }
+
+        if let Ok(json_str) = serde_json::to_string(&tracked) {
+            if let Ok(put) = kv.put("tracked_anime", json_str) {
+                let _ = put.execute().await;
+            }
         }
     }
 }
 
 #[event(fetch)]
-pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let router = Router::new();
 
     router
@@ -262,6 +300,9 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                         episode: 3,
                         source: "Worker Diagnostic".into(),
                         url: "https://samehadaku.li".into(),
+                        thumbnail_url: Some(
+                            "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx170942-KKcLfQzV57nG.jpg".into(),
+                        ),
                         image_url: Some(
                             "https://img.youtube.com/vi/uvvYMBLY-w4/maxresdefault.jpg".into(),
                         ),
@@ -278,34 +319,50 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             }
         })
         .get_async("/tracked", |_, ctx| async move {
-            let kv = ctx.env.kv("ANIME_KV")?;
-            let tracked: Vec<TrackedAnime> = kv
-                .get("tracked_anime")
-                .json()
-                .await?
-                .unwrap_or_else(default_tracked_list);
-            Response::from_json(&tracked)
+            let kv = match ctx.env.kv("ANIME_KV") {
+                Ok(store) => store,
+                Err(e) => return Response::error(format!("KV error: {:?}", e), 500),
+            };
+            match kv.get("tracked_anime").text().await {
+                Ok(Some(t)) => {
+                    let mut resp = Response::ok(t)?;
+                    resp.headers_mut().set("Content-Type", "application/json")?;
+                    Ok(resp)
+                }
+                Ok(None) => Response::ok("[]"),
+                Err(e) => Response::error(format!("Read error: {:?}", e), 500),
+            }
         })
         .post_async("/trigger", |_, ctx| async move {
-            let kv = ctx.env.kv("ANIME_KV")?;
-            let mut tracked: Vec<TrackedAnime> = kv
-                .get("tracked_anime")
-                .json()
-                .await?
-                .unwrap_or_else(default_tracked_list);
+            let kv = match ctx.env.kv("ANIME_KV") {
+                Ok(store) => store,
+                Err(e) => return Response::error(format!("KV error: {:?}", e), 500),
+            };
+            let mut tracked = match kv.get("tracked_anime").json::<Vec<TrackedAnime>>().await {
+                Ok(Some(list)) => list,
+                Ok(None) => default_tracked_list(),
+                Err(e) => return Response::error(format!("Error reading KV: {:?}", e), 500),
+            };
 
-            let releases = check_for_releases(&mut tracked).await?;
+            let releases = match check_for_releases(&mut tracked).await {
+                Ok(r) => r,
+                Err(e) => return Response::error(format!("Check error: {:?}", e), 500),
+            };
+
+            let count = releases.len();
             if !releases.is_empty() {
+                let webhook_url = match ctx.env.secret("DISCORD_WEBHOOK_URL") {
+                    Ok(sec) => sec.to_string(),
+                    Err(e) => return Response::error(format!("Missing secret: {:?}", e), 500),
+                };
+                let _ = discord::send_discord_webhook(&webhook_url, &releases).await;
                 if let Ok(json_str) = serde_json::to_string(&tracked) {
-                    let _ = kv.put("tracked_anime", json_str)?.execute().await;
-                }
-                if let Ok(webhook_url) = ctx.env.secret("DISCORD_WEBHOOK_URL") {
-                    let _ =
-                        discord::send_discord_webhook(&webhook_url.to_string(), &releases).await;
+                    if let Ok(put) = kv.put("tracked_anime", json_str) {
+                        let _ = put.execute().await;
+                    }
                 }
             }
-
-            Response::from_json(&releases)
+            Response::ok(format!(r#"{{"triggered":true,"new_releases":{}}}"#, count))
         })
         .run(req, env)
         .await
