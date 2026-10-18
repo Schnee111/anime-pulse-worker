@@ -156,7 +156,7 @@ pub fn default_tracked_list() -> Vec<TrackedAnime> {
 
 /// Merges defaults into tracked list to seamlessly migrate legacy KV records
 /// that might be missing thumbnail_url or holding outdated image_urls.
-pub fn merge_tracked_defaults(tracked: &mut [TrackedAnime]) {
+pub fn merge_tracked_defaults(tracked: &mut Vec<TrackedAnime>) {
     let defaults = default_tracked_list();
     for item in tracked.iter_mut() {
         if let Some(def) = defaults.iter().find(|d| d.id == item.id) {
@@ -166,6 +166,11 @@ pub fn merge_tracked_defaults(tracked: &mut [TrackedAnime]) {
             if item.image_url != def.image_url {
                 item.image_url = def.image_url.clone();
             }
+        }
+    }
+    for def in defaults {
+        if !tracked.iter().any(|t| t.id == def.id) {
+            tracked.push(def);
         }
     }
 }
@@ -180,7 +185,6 @@ pub async fn check_for_releases(tracked: &mut [TrackedAnime]) -> Result<Vec<Epis
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     )?;
     headers.set("Accept", "application/json")?;
-    headers.set("Accept-Encoding", "gzip, deflate")?;
 
     let mut init = RequestInit::new();
     init.with_method(Method::Get);
@@ -424,7 +428,9 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     }
                 }
             }
-            Response::ok(format!(r#"{{"triggered":true,"new_releases":{}}}"#, count))
+            let mut resp = Response::ok(format!(r#"{{"triggered":true,"new_releases":{}}}"#, count))?;
+            resp.headers_mut().set("Content-Type", "application/json")?;
+            Ok(resp)
         })
         .run(req, env)
         .await
