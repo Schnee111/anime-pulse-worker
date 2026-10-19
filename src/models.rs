@@ -20,6 +20,8 @@ pub struct TrackedAnime {
     pub last_episode: u32,
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
 }
 
@@ -30,6 +32,8 @@ pub struct EpisodeRelease {
     pub episode: u32,
     pub source: String,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
 }
@@ -59,6 +63,8 @@ pub struct DiscordEmbed {
     pub url: Option<String>,
     pub description: String,
     pub color: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<DiscordEmbedMedia>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<DiscordEmbedMedia>,
     pub footer: Option<DiscordEmbedFooter>,
