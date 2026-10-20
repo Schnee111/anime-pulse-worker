@@ -151,6 +151,22 @@ pub fn default_tracked_list() -> Vec<TrackedAnime> {
             thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx128712-AlVwHbrugvj6.jpg".into()),
             image_url: Some("https://img.youtube.com/vi/MghFONe--0Q/maxresdefault.jpg".into()),
         },
+        TrackedAnime {
+            id: "tsuihou-sareta-cheat".into(),
+            title: "Tsuihou Sareta Cheat Fuyo Majutsushi wa Kimama na Second Life wo Ouka Suru".into(),
+            last_episode: 2,
+            url: "https://otakudesu.blog/anime/chii-fuyo-sub-indo/".into(),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/b207329-6VPeZIDfF4Sr.png".into()),
+            image_url: Some("https://img.youtube.com/vi/BJXBr_aFF8s/maxresdefault.jpg".into()),
+        },
+        TrackedAnime {
+            id: "shiotaiou-satou-san".into(),
+            title: "Shiotaiou no Satou-san ga Ore ni dake Amai".into(),
+            last_episode: 2,
+            url: "https://otakudesu.blog/anime/shiotaiou-satou-amai-sub-indo/".into(),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx209502-C81oN8M4Smlo.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/8XgKVzuLmJw/maxresdefault.jpg".into()),
+        },
     ]
 }
 
