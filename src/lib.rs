@@ -1,6 +1,7 @@
 pub mod discord;
 pub mod matcher;
 pub mod models;
+pub mod sokuja;
 
 use models::{EpisodeRelease, SamehadakuPost, TrackedAnime};
 use worker::*;
@@ -191,7 +192,16 @@ pub fn merge_tracked_defaults(tracked: &mut Vec<TrackedAnime>) {
     }
 }
 
-pub async fn check_for_releases(tracked: &mut [TrackedAnime]) -> Result<Vec<EpisodeRelease>> {
+/// A raw release candidate before it is matched against the tracked watchlist.
+struct ReleaseCandidate {
+    title: String,
+    episode: u32,
+    url: String,
+    source: &'static str,
+}
+
+/// Source 1: Samehadaku WP-JSON REST API (fast, structured).
+async fn fetch_samehadaku_candidates() -> Result<Vec<ReleaseCandidate>> {
     let fetch_url =
         "https://samehadaku.li/wp-json/wp/v2/posts?per_page=15&_fields=id,date,title,link";
 
@@ -207,51 +217,83 @@ pub async fn check_for_releases(tracked: &mut [TrackedAnime]) -> Result<Vec<Epis
     init.with_headers(headers);
 
     let req = Request::new_with_init(fetch_url, &init)?;
-    let mut resp = match Fetch::Request(req).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            worker::console_error!("Failed to fetch Samehadaku REST API: {:?}", e);
-            return Ok(Vec::new());
-        }
-    };
+    let mut resp = Fetch::Request(req).send().await?;
 
     if resp.status_code() != 200 {
-        worker::console_error!(
-            "Samehadaku API responded with non-200 status: {}",
+        return Err(worker::Error::RustError(format!(
+            "Samehadaku API returned HTTP {}",
             resp.status_code()
-        );
-        return Ok(Vec::new());
+        )));
     }
 
     let body_str = resp.text().await?;
-    let posts: Vec<SamehadakuPost> = match serde_json::from_str(&body_str) {
-        Ok(p) => p,
-        Err(e) => {
-            worker::console_error!("Failed to parse Samehadaku posts JSON: {:?}", e);
-            return Ok(Vec::new());
+    let posts: Vec<SamehadakuPost> = serde_json::from_str(&body_str)
+        .map_err(|e| worker::Error::RustError(format!("Samehadaku JSON parse failed: {e}")))?;
+
+    let mut out = Vec::new();
+    for post in posts.iter() {
+        if let Some((parsed_title, episode_num)) =
+            matcher::parse_release_title(&post.title.rendered)
+        {
+            out.push(ReleaseCandidate {
+                title: parsed_title,
+                episode: episode_num,
+                url: post.link.clone(),
+                source: "Samehadaku API",
+            });
         }
-    };
+    }
+    Ok(out)
+}
+
+/// Collects release candidates from every configured source and matches them
+/// against the tracked watchlist.
+///
+/// A source failure is logged and skipped — one degraded upstream must never
+/// suppress releases reported by the other. Because `last_episode` is advanced
+/// as soon as a candidate matches, the same episode reported by two sources
+/// produces a single notification (Samehadaku is evaluated first, so its direct
+/// post link wins).
+pub async fn check_for_releases(tracked: &mut [TrackedAnime]) -> Result<Vec<EpisodeRelease>> {
+    let mut candidates: Vec<ReleaseCandidate> = Vec::new();
+
+    match fetch_samehadaku_candidates().await {
+        Ok(mut c) => candidates.append(&mut c),
+        Err(e) => worker::console_error!("Source Samehadaku unavailable, skipping: {:?}", e),
+    }
+
+    match sokuja::fetch_latest_episodes().await {
+        Ok(eps) => {
+            worker::console_log!("Sokuja reported {} latest episode links", eps.len());
+            for e in eps {
+                candidates.push(ReleaseCandidate {
+                    title: e.slug_title,
+                    episode: e.episode,
+                    url: e.url,
+                    source: "Sokuja",
+                });
+            }
+        }
+        Err(e) => worker::console_error!("Source Sokuja unavailable, skipping: {:?}", e),
+    }
 
     let mut detected_releases = Vec::new();
 
-    for post in posts.iter() {
-        let raw_title = &post.title.rendered;
-        if let Some((parsed_title, episode_num)) = matcher::parse_release_title(raw_title) {
-            for item in tracked.iter_mut() {
-                if matcher::matches_tracked(&item.title, &parsed_title)
-                    && episode_num > item.last_episode
-                {
-                    item.last_episode = episode_num;
-                    detected_releases.push(EpisodeRelease {
-                        anime_id: item.id.clone(),
-                        title: item.title.clone(),
-                        episode: episode_num,
-                        source: "Samehadaku API".into(),
-                        url: post.link.clone(),
-                        thumbnail_url: item.thumbnail_url.clone(),
-                        image_url: item.image_url.clone(),
-                    });
-                }
+    for cand in candidates {
+        for item in tracked.iter_mut() {
+            if cand.episode > item.last_episode
+                && matcher::matches_tracked(&item.title, &cand.title)
+            {
+                item.last_episode = cand.episode;
+                detected_releases.push(EpisodeRelease {
+                    anime_id: item.id.clone(),
+                    title: item.title.clone(),
+                    episode: cand.episode,
+                    source: cand.source.into(),
+                    url: cand.url.clone(),
+                    thumbnail_url: item.thumbnail_url.clone(),
+                    image_url: item.image_url.clone(),
+                });
             }
         }
     }
@@ -362,6 +404,38 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 Err(e) => {
                     worker::console_error!("Secret DISCORD_WEBHOOK_URL error: {:?}", e);
                     Response::error("Missing webhook configuration", 500)
+                }
+            }
+        })
+        .get_async("/schedule", |_, _| async move {
+            match sokuja::fetch_schedule().await {
+                Ok(rows) => {
+                    let payload: Vec<serde_json::Value> = rows
+                        .into_iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "day": r.day,
+                                "time": r.time,
+                                "title": r.title,
+                                "url": r.url
+                            })
+                        })
+                        .collect();
+                    match serde_json::to_string(&payload) {
+                        Ok(body) => {
+                            let mut resp = Response::ok(body)?;
+                            resp.headers_mut().set("Content-Type", "application/json")?;
+                            Ok(resp)
+                        }
+                        Err(e) => {
+                            worker::console_error!("Schedule serialization error: {:?}", e);
+                            Response::error("Internal server error", 500)
+                        }
+                    }
+                }
+                Err(e) => {
+                    worker::console_error!("Sokuja schedule unavailable: {:?}", e);
+                    Response::error("Schedule source unavailable", 502)
                 }
             }
         })
