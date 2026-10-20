@@ -2,6 +2,7 @@ pub mod discord;
 pub mod matcher;
 pub mod models;
 pub mod sokuja;
+pub mod telegram;
 
 use models::{EpisodeRelease, SamehadakuPost, TrackedAnime};
 use worker::*;
@@ -246,15 +247,65 @@ async fn fetch_samehadaku_candidates() -> Result<Vec<ReleaseCandidate>> {
     Ok(out)
 }
 
+// Collects release candidates from every configured source and matches them
+// against the tracked watchlist.
+//
+// A source failure is logged and skipped - one degraded upstream must never
+// suppress releases reported by the other. Because `last_episode` is advanced
+// as soon as a candidate matches, the same episode reported by two sources
+// produces a single notification (Samehadaku is evaluated first, so its direct
+// post link wins).
+//
+// The Sokuja line is served by the Telegram bridge on a 15 minute throttle,
+// with the HTML homepage kept as a fallback for when the bridge is down.
+
+/// Minimum gap between Telegram channel polls.
+///
+/// The channel page is 152 KB versus the 590 KB Sokuja homepage, but at a
+/// 60 s cadence it would still dominate the CPU budget on the Workers Free
+/// tier. Fifteen minutes keeps the safety net while cutting the cost ~98%;
+/// Samehadaku remains the 60 s fast path.
+const TELEGRAM_INTERVAL_MS: i64 = 15 * 60 * 1000;
+
+/// KV key holding the epoch-millis stamp of the last Telegram poll.
+const TELEGRAM_LAST_CHECK_KEY: &str = "telegram_last_check";
+
+/// True when the Telegram bridge is due for another poll.
+///
+/// Fails open: if the stamp is missing or unreadable we poll, because a stray
+/// extra fetch costs far less than a silently dead source.
+async fn telegram_due(kv: &KvStore) -> bool {
+    let now = chrono::Utc::now().timestamp_millis();
+    match kv.get(TELEGRAM_LAST_CHECK_KEY).text().await {
+        Ok(Some(raw)) => match raw.trim().parse::<i64>() {
+            Ok(last) => now.saturating_sub(last) >= TELEGRAM_INTERVAL_MS,
+            Err(_) => true,
+        },
+        _ => true,
+    }
+}
+
+/// Records the current time as the last Telegram poll attempt.
+///
+/// Marked on attempt rather than success so an outage cannot escalate into a
+/// poll every 60 s plus a 590 KB fallback download each time.
+async fn mark_telegram_checked(kv: &KvStore) {
+    let stamp = chrono::Utc::now().timestamp_millis().to_string();
+    if let Ok(put) = kv.put(TELEGRAM_LAST_CHECK_KEY, stamp) {
+        if let Err(e) = put.execute().await {
+            worker::console_error!("Could not persist Telegram throttle stamp: {:?}", e);
+        }
+    }
+}
+
 /// Collects release candidates from every configured source and matches them
 /// against the tracked watchlist.
 ///
-/// A source failure is logged and skipped — one degraded upstream must never
-/// suppress releases reported by the other. Because `last_episode` is advanced
-/// as soon as a candidate matches, the same episode reported by two sources
-/// produces a single notification (Samehadaku is evaluated first, so its direct
-/// post link wins).
-pub async fn check_for_releases(tracked: &mut [TrackedAnime]) -> Result<Vec<EpisodeRelease>> {
+/// `kv` is used only for the Telegram bridge throttle stamp.
+pub async fn check_for_releases(
+    tracked: &mut [TrackedAnime],
+    kv: &KvStore,
+) -> Result<Vec<EpisodeRelease>> {
     let mut candidates: Vec<ReleaseCandidate> = Vec::new();
 
     match fetch_samehadaku_candidates().await {
@@ -262,19 +313,46 @@ pub async fn check_for_releases(tracked: &mut [TrackedAnime]) -> Result<Vec<Epis
         Err(e) => worker::console_error!("Source Samehadaku unavailable, skipping: {:?}", e),
     }
 
-    match sokuja::fetch_latest_episodes().await {
-        Ok(eps) => {
-            worker::console_log!("Sokuja reported {} latest episode links", eps.len());
-            for e in eps {
-                candidates.push(ReleaseCandidate {
-                    title: e.slug_title,
-                    episode: e.episode,
-                    url: e.url,
-                    source: "Sokuja",
-                });
+    if telegram_due(kv).await {
+        match telegram::fetch_posts().await {
+            Ok(posts) => {
+                mark_telegram_checked(kv).await;
+                worker::console_log!("Telegram bridge reported {} release posts", posts.len());
+                for p in posts {
+                    candidates.push(ReleaseCandidate {
+                        title: p.title,
+                        episode: p.episode,
+                        url: p.url,
+                        source: "Telegram",
+                    });
+                }
+            }
+            Err(e) => {
+                mark_telegram_checked(kv).await;
+                worker::console_error!(
+                    "Telegram bridge unavailable ({}), falling back to Sokuja HTML",
+                    e
+                );
+                match sokuja::fetch_latest_episodes().await {
+                    Ok(eps) => {
+                        worker::console_log!("Sokuja HTML fallback reported {} links", eps.len());
+                        for e in eps {
+                            candidates.push(ReleaseCandidate {
+                                title: e.slug_title,
+                                episode: e.episode,
+                                url: e.url,
+                                source: "Sokuja",
+                            });
+                        }
+                    }
+                    Err(e2) => {
+                        worker::console_error!("Sokuja HTML fallback unavailable too: {:?}", e2)
+                    }
+                }
             }
         }
-        Err(e) => worker::console_error!("Source Sokuja unavailable, skipping: {:?}", e),
+    } else {
+        worker::console_log!("Telegram bridge skipped, next poll window not reached");
     }
 
     let mut detected_releases = Vec::new();
@@ -330,7 +408,7 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
 
     merge_tracked_defaults(&mut tracked);
 
-    let releases = match check_for_releases(&mut tracked).await {
+    let releases = match check_for_releases(&mut tracked, &kv).await {
         Ok(r) => r,
         Err(e) => {
             worker::console_error!("Error checking releases: {:?}", e);
@@ -487,7 +565,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             };
             merge_tracked_defaults(&mut tracked);
 
-            let releases = match check_for_releases(&mut tracked).await {
+            let releases = match check_for_releases(&mut tracked, &kv).await {
                 Ok(r) => r,
                 Err(e) => {
                     worker::console_error!("Check error: {:?}", e);
