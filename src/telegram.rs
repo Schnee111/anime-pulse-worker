@@ -17,7 +17,21 @@
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 use worker::*;
+
+/// Compiled once per isolate instead of per call; `parse_posts` runs on a
+/// hot path inside WASM where recompiling six patterns per poll is waste.
+static BLOCK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"tgme_widget_message_wrap").unwrap());
+static TIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"datetime="([^"]+)""#).unwrap());
+static BODY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)tgme_widget_message_text[^>]*>(.*?)</div>").unwrap());
+static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
+static EPISODE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bEpisode\s+(\d+)\b").unwrap());
+static LINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"https?://sokuja\.(?:net|id|uk)/[A-Za-z0-9\-]+/?"#).unwrap());
 
 /// Public channel preview for the Sokuja release feed.
 const CHANNEL_URL: &str = "https://t.me/s/sokuja";
@@ -68,25 +82,18 @@ pub async fn fetch_posts() -> Result<Vec<TelegramPost>> {
 /// text, then split on `Episode N`, which lets us recover the full title even
 /// when it contains punctuation or a trailing period.
 pub fn parse_posts(html: &str) -> Vec<TelegramPost> {
-    let block_re = Regex::new(r"tgme_widget_message_wrap").unwrap();
-    let time_re = Regex::new(r#"datetime="([^"]+)""#).unwrap();
-    let body_re = Regex::new(r"(?s)tgme_widget_message_text[^>]*>(.*?)</div>").unwrap();
-    let tag_re = Regex::new(r"<[^>]+>").unwrap();
-    let episode_re = Regex::new(r"(?i)\bEpisode\s+(\d+)\b").unwrap();
-    let link_re = Regex::new(r#"https?://sokuja\.(?:net|id|uk)/[A-Za-z0-9\-]+/?"#).unwrap();
-
     let mut posts: Vec<TelegramPost> = Vec::new();
     // `split` on the marker yields the preamble first, so trailing blocks are
     // the actual messages; iterate all and rely on the body regex to filter.
-    for block in block_re.split(html) {
-        let Some(body_caps) = body_re.captures(block) else {
+    for block in BLOCK_RE.split(html) {
+        let Some(body_caps) = BODY_RE.captures(block) else {
             continue;
         };
 
-        let raw_body = tag_re.replace_all(&body_caps[1], " ");
+        let raw_body = TAG_RE.replace_all(&body_caps[1], " ");
         let text = collapse_whitespace(&unescape_entities(&raw_body));
 
-        let Some(ep_caps) = episode_re.captures(&text) else {
+        let Some(ep_caps) = EPISODE_RE.captures(&text) else {
             continue;
         };
         let Ok(episode) = ep_caps[1].parse::<u32>() else {
@@ -98,11 +105,11 @@ pub fn parse_posts(html: &str) -> Vec<TelegramPost> {
             continue;
         }
 
-        let Some(url) = link_re.find(block).map(|m| m.as_str().to_string()) else {
+        let Some(url) = LINK_RE.find(block).map(|m| m.as_str().to_string()) else {
             continue;
         };
 
-        let published_at = time_re
+        let published_at = TIME_RE
             .captures(block)
             .map(|c| c[1].to_string())
             .unwrap_or_default();

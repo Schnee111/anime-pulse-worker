@@ -277,12 +277,22 @@ const TELEGRAM_LAST_CHECK_KEY: &str = "telegram_last_check";
 async fn telegram_due(kv: &KvStore) -> bool {
     let now = chrono::Utc::now().timestamp_millis();
     match kv.get(TELEGRAM_LAST_CHECK_KEY).text().await {
-        Ok(Some(raw)) => match raw.trim().parse::<i64>() {
-            Ok(last) => now.saturating_sub(last) >= TELEGRAM_INTERVAL_MS,
-            Err(_) => true,
+        Ok(Some(raw)) => match parse_stamp(&raw) {
+            Some(last) => now.saturating_sub(last) >= TELEGRAM_INTERVAL_MS,
+            None => true,
         },
         _ => true,
     }
+}
+
+/// Parses the throttle stamp written by [`mark_telegram_checked`].
+///
+/// `KvStore::put` serialises a `String` through `serde_json`, so the stored
+/// value comes back as `"<millis>"` with the quotes intact. Accepting both the
+/// quoted and the bare form keeps the throttle from silently failing open on
+/// every tick, which would poll the channel every 60 s.
+fn parse_stamp(raw: &str) -> Option<i64> {
+    raw.trim().trim_matches('"').trim().parse::<i64>().ok()
 }
 
 /// Records the current time as the last Telegram poll attempt.
@@ -323,7 +333,7 @@ pub async fn check_for_releases(
                         title: p.title,
                         episode: p.episode,
                         url: p.url,
-                        source: "Telegram",
+                        source: "Sokuja (Telegram)",
                     });
                 }
             }
@@ -602,4 +612,25 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         })
         .run(req, env)
         .await
+}
+
+#[cfg(test)]
+mod lib_tests {
+    use super::parse_stamp;
+
+    #[test]
+    fn parses_quoted_and_bare_stamps() {
+        // KvStore::put serialises a String through serde_json, so the stored
+        // value reads back quoted. A bare form must also work.
+        assert_eq!(parse_stamp("\"1730000000000\""), Some(1730000000000));
+        assert_eq!(parse_stamp("1730000000000"), Some(1730000000000));
+        assert_eq!(parse_stamp("  \"1730000000000\"  "), Some(1730000000000));
+    }
+
+    #[test]
+    fn rejects_garbage_stamps() {
+        assert_eq!(parse_stamp(""), None);
+        assert_eq!(parse_stamp("not-a-number"), None);
+        assert_eq!(parse_stamp("\"\""), None);
+    }
 }
