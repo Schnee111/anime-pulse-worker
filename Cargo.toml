@@ -13,8 +13,8 @@ crate-type = ["cdylib", "rlib"]
 worker = "0.8.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 regex = "1.10"
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

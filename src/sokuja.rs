@@ -16,9 +16,24 @@
 //! Only allowed paths are requested below.
 
 use regex::Regex;
+use std::sync::LazyLock;
 use worker::*;
 
 pub const SOKUJA_BASE: &str = "https://x6.sokuja.uk";
+
+/// Compiled once per isolate: these parsers are only reached on `/schedule` and
+/// the Telegram fallback, but recompiling a regex per call is pure waste inside
+/// WASM.
+static EPISODE_LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"href="/([a-z0-9][a-z0-9\-]*)-episode-(\d+)-subtitle-indonesia/""#).unwrap()
+});
+
+static SCHEDULE_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#">(Senin|Selasa|Rabu|Kamis|Jumat|Sabtu|Minggu)<|\b(\d{2}:\d{2})\b|href="(/anime/([a-z0-9][a-z0-9\-]*)-subtitle-indonesia/)""#,
+    )
+    .unwrap()
+});
 
 /// A single episode row scraped from the Sokuja home page.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,14 +104,7 @@ fn slug_to_title(slug: &str) -> String {
 /// ```
 /// The anchor text is truncated, so the title is derived from the slug instead.
 pub fn parse_latest_episodes(html: &str) -> Vec<SokujaEpisode> {
-    let re = match Regex::new(r#"href="/([a-z0-9][a-z0-9\-]*)-episode-(\d+)-subtitle-indonesia/""#)
-    {
-        Ok(r) => r,
-        Err(e) => {
-            worker::console_error!("Sokuja episode regex failed to compile: {:?}", e);
-            return Vec::new();
-        }
-    };
+    let re = &*EPISODE_LINK_RE;
 
     let mut out: Vec<SokujaEpisode> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -134,15 +142,7 @@ pub fn parse_latest_episodes(html: &str) -> Vec<SokujaEpisode> {
 /// the current day, so the nav is overwritten by the real section heading before
 /// the first row is emitted.
 pub fn parse_schedule(html: &str) -> Vec<SokujaScheduleRow> {
-    let re = match Regex::new(
-        r#">(Senin|Selasa|Rabu|Kamis|Jumat|Sabtu|Minggu)<|\b(\d{2}:\d{2})\b|href="(/anime/([a-z0-9][a-z0-9\-]*)-subtitle-indonesia/)""#,
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            worker::console_error!("Sokuja schedule regex failed to compile: {:?}", e);
-            return Vec::new();
-        }
-    };
+    let re = &*SCHEDULE_TOKEN_RE;
 
     let mut rows: Vec<SokujaScheduleRow> = Vec::new();
     let mut current_day = String::new();

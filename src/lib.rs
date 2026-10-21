@@ -196,11 +196,11 @@ pub fn merge_tracked_defaults(tracked: &mut Vec<TrackedAnime>) {
 }
 
 /// A raw release candidate before it is matched against the tracked watchlist.
-struct ReleaseCandidate {
-    title: String,
-    episode: u32,
-    url: String,
-    source: &'static str,
+pub struct ReleaseCandidate {
+    pub title: String,
+    pub episode: u32,
+    pub url: String,
+    pub source: &'static str,
 }
 
 /// Source 1: Samehadaku WP-JSON REST API (fast, structured).
@@ -277,7 +277,7 @@ const TELEGRAM_LAST_CHECK_KEY: &str = "telegram_last_check";
 /// Fails open: if the stamp is missing or unreadable we poll, because a stray
 /// extra fetch costs far less than a silently dead source.
 async fn telegram_due(kv: &KvStore) -> bool {
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = profile::now_ms();
     match kv.get(TELEGRAM_LAST_CHECK_KEY).text().await {
         Ok(Some(raw)) => match parse_stamp(&raw) {
             Some(last) => now.saturating_sub(last) >= TELEGRAM_INTERVAL_MS,
@@ -302,7 +302,7 @@ fn parse_stamp(raw: &str) -> Option<i64> {
 /// Marked on attempt rather than success so an outage cannot escalate into a
 /// poll every 60 s plus a 590 KB fallback download each time.
 async fn mark_telegram_checked(kv: &KvStore) {
-    let stamp = chrono::Utc::now().timestamp_millis().to_string();
+    let stamp = profile::now_ms().to_string();
     if let Ok(put) = kv.put(TELEGRAM_LAST_CHECK_KEY, stamp) {
         if let Err(e) = put.execute().await {
             worker::console_error!("Could not persist Telegram throttle stamp: {:?}", e);
@@ -310,26 +310,49 @@ async fn mark_telegram_checked(kv: &KvStore) {
     }
 }
 
-/// Collects release candidates from every configured source and matches them
-/// against the tracked watchlist.
+/// Result of a concurrent source sweep.
 ///
-/// `kv` is used only for the Telegram bridge throttle stamp.
-pub async fn check_for_releases(
-    tracked: &mut [TrackedAnime],
-    kv: &KvStore,
-    profile: &mut TickProfile,
-) -> Result<Vec<EpisodeRelease>> {
-    let mut candidates: Vec<ReleaseCandidate> = Vec::new();
+/// Timings are returned rather than written into a `&mut TickProfile` so the
+/// sweep can run inside `join` without holding a mutable borrow.
+pub struct Sources {
+    pub candidates: Vec<ReleaseCandidate>,
+    pub samehadaku_ms: i64,
+    pub telegram_ms: i64,
+}
 
-    let started = profile::now_ms();
-    match fetch_samehadaku_candidates().await {
+/// Fetches every configured source, with the two independent round trips
+/// overlapped.
+///
+/// The Samehadaku request dominates a tick (~670 ms measured) and the Telegram
+/// throttle stamp is a ~100 ms KV read, so serialising them wastes most of the
+/// KV latency. `join` hides it under the network call. The Telegram fetch
+/// itself still waits for the stamp, because whether to fetch at all depends on
+/// it, and it only runs on 1 tick in 15.
+pub async fn collect_sources(kv: &KvStore) -> Sources {
+    let samehadaku = async {
+        let started = profile::now_ms();
+        let result = fetch_samehadaku_candidates().await;
+        (result, profile::now_ms().saturating_sub(started).max(0))
+    };
+
+    let throttle = async {
+        let started = profile::now_ms();
+        let due = telegram_due(kv).await;
+        (due, profile::now_ms().saturating_sub(started).max(0))
+    };
+
+    let ((samehadaku_result, samehadaku_ms), (due, stamp_ms)) =
+        futures_util::future::join(samehadaku, throttle).await;
+
+    let mut candidates: Vec<ReleaseCandidate> = Vec::new();
+    match samehadaku_result {
         Ok(mut c) => candidates.append(&mut c),
         Err(e) => worker::console_error!("Source Samehadaku unavailable, skipping: {:?}", e),
     }
-    profile.record(Stage::Samehadaku, started, profile::now_ms());
 
-    let telegram_started = profile::now_ms();
-    if telegram_due(kv).await {
+    let mut telegram_ms = stamp_ms;
+    if due {
+        let started = profile::now_ms();
         match telegram::fetch_posts().await {
             Ok(posts) => {
                 mark_telegram_checked(kv).await;
@@ -367,12 +390,28 @@ pub async fn check_for_releases(
                 }
             }
         }
+        telegram_ms += profile::now_ms().saturating_sub(started).max(0);
     } else {
         worker::console_log!("Telegram bridge skipped, next poll window not reached");
     }
-    profile.record(Stage::Telegram, telegram_started, profile::now_ms());
 
-    let matching_started = profile::now_ms();
+    Sources {
+        candidates,
+        samehadaku_ms,
+        telegram_ms,
+    }
+}
+
+/// Matches candidates against the watchlist, advancing `last_episode`.
+///
+/// Pure apart from the `last_episode` mutation, so it is unit-testable without
+/// network or KV. Samehadaku candidates are supplied first, and because
+/// `last_episode` advances on the first match, a duplicate episode from a
+/// second source produces exactly one notification.
+pub fn match_releases(
+    tracked: &mut [TrackedAnime],
+    candidates: Vec<ReleaseCandidate>,
+) -> Vec<EpisodeRelease> {
     let mut detected_releases = Vec::new();
 
     for cand in candidates {
@@ -394,9 +433,7 @@ pub async fn check_for_releases(
         }
     }
 
-    profile.record(Stage::Matching, matching_started, profile::now_ms());
-
-    Ok(detected_releases)
+    detected_releases
 }
 
 #[event(scheduled)]
@@ -412,8 +449,19 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
         }
     };
 
+    // The KV read and the upstream sweep are independent, so run them together:
+    // the Samehadaku round trip is ~670 ms and would otherwise sit idle while a
+    // ~100 ms KV read finishes first.
     let kv_started = profile::now_ms();
-    let mut tracked = match kv.get("tracked_anime").json::<Vec<TrackedAnime>>().await {
+    let tracked_read = kv.get("tracked_anime");
+    let sources_future = collect_sources(&kv);
+    let (sources, tracked_result) =
+        futures_util::future::join(sources_future, tracked_read.json::<Vec<TrackedAnime>>()).await;
+    profile.record(Stage::KvRead, kv_started, profile::now_ms());
+    profile.samehadaku = sources.samehadaku_ms;
+    profile.telegram = sources.telegram_ms;
+
+    let mut tracked = match tracked_result {
         Ok(Some(list)) => list,
         Ok(None) => {
             let default_list = default_tracked_list();
@@ -429,19 +477,12 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
             default_tracked_list()
         }
     };
-    profile.record(Stage::KvRead, kv_started, profile::now_ms());
 
     merge_tracked_defaults(&mut tracked);
 
-    let releases = match check_for_releases(&mut tracked, &kv, &mut profile).await {
-        Ok(r) => r,
-        Err(e) => {
-            worker::console_error!("Error checking releases: {:?}", e);
-            profile.total = profile::now_ms().saturating_sub(tick_started);
-            profile.log();
-            return;
-        }
-    };
+    let matching_started = profile::now_ms();
+    let releases = match_releases(&mut tracked, sources.candidates);
+    profile.record(Stage::Matching, matching_started, profile::now_ms());
 
     if !releases.is_empty() {
         worker::console_log!("Detected {} new releases!", releases.len());
@@ -591,7 +632,18 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 }
             };
             let kv_started = profile::now_ms();
-            let mut tracked = match kv.get("tracked_anime").json::<Vec<TrackedAnime>>().await {
+            let tracked_read = kv.get("tracked_anime");
+            let sources_future = collect_sources(&kv);
+            let (sources, tracked_result) = futures_util::future::join(
+                sources_future,
+                tracked_read.json::<Vec<TrackedAnime>>(),
+            )
+            .await;
+            profile.record(Stage::KvRead, kv_started, profile::now_ms());
+            profile.samehadaku = sources.samehadaku_ms;
+            profile.telegram = sources.telegram_ms;
+
+            let mut tracked = match tracked_result {
                 Ok(Some(list)) => list,
                 Ok(None) => default_tracked_list(),
                 Err(e) => {
@@ -599,16 +651,11 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     return Response::error("Failed to read storage", 500);
                 }
             };
-            profile.record(Stage::KvRead, kv_started, profile::now_ms());
             merge_tracked_defaults(&mut tracked);
 
-            let releases = match check_for_releases(&mut tracked, &kv, &mut profile).await {
-                Ok(r) => r,
-                Err(e) => {
-                    worker::console_error!("Check error: {:?}", e);
-                    return Response::error("Failed to check releases", 500);
-                }
-            };
+            let matching_started = profile::now_ms();
+            let releases = match_releases(&mut tracked, sources.candidates);
+            profile.record(Stage::Matching, matching_started, profile::now_ms());
 
             let count = releases.len();
             if !releases.is_empty() {
@@ -665,5 +712,104 @@ mod lib_tests {
         assert_eq!(parse_stamp(""), None);
         assert_eq!(parse_stamp("not-a-number"), None);
         assert_eq!(parse_stamp("\"\""), None);
+    }
+}
+
+#[cfg(test)]
+mod match_tests {
+    use super::*;
+
+    fn tracked(id: &str, title: &str, last_episode: u32) -> TrackedAnime {
+        TrackedAnime {
+            id: id.to_string(),
+            title: title.to_string(),
+            last_episode,
+            url: String::new(),
+            thumbnail_url: None,
+            image_url: None,
+        }
+    }
+
+    fn candidate(title: &str, episode: u32, source: &'static str) -> ReleaseCandidate {
+        ReleaseCandidate {
+            title: title.to_string(),
+            episode,
+            url: format!("https://example.test/{episode}"),
+            source,
+        }
+    }
+
+    #[test]
+    fn advances_episode_and_emits_one_release() {
+        let mut list = vec![tracked(
+            "shiotaiou",
+            "Shiotaiou no Satou-san ga Ore ni dake Amai",
+            3,
+        )];
+        let out = match_releases(
+            &mut list,
+            vec![candidate(
+                "Shiotaiou no Satou-san ga Ore ni dake Amai",
+                4,
+                "Samehadaku API",
+            )],
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(list[0].last_episode, 4);
+        assert_eq!(out[0].episode, 4);
+        assert_eq!(out[0].source, "Samehadaku API");
+    }
+
+    #[test]
+    fn same_episode_from_two_sources_yields_a_single_notification() {
+        let mut list = vec![tracked("kyouran", "Kyouran Reijou Nia Liston", 2)];
+        let out = match_releases(
+            &mut list,
+            vec![
+                candidate("Kyouran Reijou Nia Liston", 3, "Samehadaku API"),
+                candidate(
+                    "Kyouran Reijou Nia Liston: Byoujaku Reijou ni Tensei",
+                    3,
+                    "Sokuja (Telegram)",
+                ),
+            ],
+        );
+
+        assert_eq!(out.len(), 1, "duplicate episode must not notify twice");
+        // Samehadaku is supplied first, so its link wins.
+        assert_eq!(out[0].source, "Samehadaku API");
+        assert_eq!(list[0].last_episode, 3);
+    }
+
+    #[test]
+    fn older_or_equal_episodes_are_ignored() {
+        let mut list = vec![tracked("psyren", "Psyren", 5)];
+        let out = match_releases(
+            &mut list,
+            vec![
+                candidate("Psyren", 5, "Samehadaku API"),
+                candidate("Psyren", 4, "Samehadaku API"),
+            ],
+        );
+
+        assert!(out.is_empty());
+        assert_eq!(list[0].last_episode, 5);
+    }
+
+    #[test]
+    fn unrelated_titles_never_match() {
+        let mut list = vec![tracked("psyren", "Psyren", 1)];
+        let out = match_releases(
+            &mut list,
+            vec![candidate(
+                "Dragon Ball Super: Beerus",
+                2,
+                "Sokuja (Telegram)",
+            )],
+        );
+
+        assert!(out.is_empty());
+        assert_eq!(list[0].last_episode, 1);
     }
 }
