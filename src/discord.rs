@@ -3,7 +3,7 @@ use crate::models::{
     DiscordEmbed, DiscordEmbedAuthor, DiscordEmbedFooter, DiscordEmbedMedia, DiscordWebhookPayload,
     EpisodeRelease,
 };
-use worker::*;
+use worker::{js_sys, *};
 
 pub const SPECTRO_MINT: u32 = 7268279; // #6ee7b7
 pub const BOT_ICON: &str =
@@ -61,7 +61,11 @@ pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]
         return Ok(());
     }
 
-    let now_utc = chrono::Utc::now().to_rfc3339();
+    // `js_sys::Date` gives ISO-8601 without pulling in a calendar crate.
+    let now_utc = js_sys::Date::new_0()
+        .to_iso_string()
+        .as_string()
+        .unwrap_or_default();
 
     for rel in releases {
         let payload = build_single_release_payload(rel, &now_utc);

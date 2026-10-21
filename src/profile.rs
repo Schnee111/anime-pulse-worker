@@ -6,7 +6,7 @@
 //! instead of argued: each stage records elapsed milliseconds and the tick
 //! emits a single structured line that `wrangler tail` can be grepped for.
 //!
-//! Costs are whole milliseconds from `chrono`, which is coarse but free. The
+//! Costs are whole milliseconds from `Date::now()`, which is coarse but free. The
 //! instrumentation must never add a network call or allocate per stage.
 
 use serde::Serialize;
@@ -29,7 +29,7 @@ pub struct TickProfile {
 
 /// Current epoch milliseconds.
 pub fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
+    Date::now().as_millis() as i64
 }
 
 impl TickProfile {
