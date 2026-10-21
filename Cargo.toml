@@ -22,11 +22,14 @@ tokio = { version = "1", features = ["macros", "rt"] }
 # Cold isolates pay to download and instantiate this module on every tick, so
 # size is a runtime cost, not just a packaging detail. The default release
 # profile shipped a 2.66 MB module; these settings cut it to ~1.77 MB (-34%).
-# `panic = "abort"` is deliberately NOT set: worker-build runs wasm-bindgen with
-# `--force-enable-abort-handler`, and abort panics break its catch-wrapper
-# generation ("failed to generate catch wrappers"), which fails the deploy.
+# Two settings are deliberately avoided because worker-build runs wasm-bindgen
+# with `--force-enable-abort-handler` and both break its catch wrappers, which
+# fails the deploy outright:
+#   panic = "abort"  -> "failed to generate catch wrappers"
+#   strip = true     -> "externref table required for catch wrappers"
+# `strip = "debuginfo"` keeps the externref table wasm-bindgen needs.
 [profile.release]
 opt-level = "s"
 lto = true
 codegen-units = 1
-strip = true
+strip = "debuginfo"
