@@ -31,3 +31,26 @@ jobs:
 
       - name: Clippy Check
         run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+
+      # `cargo test`/`clippy` do not exercise worker-build, which invokes
+      # wasm-bindgen with `--force-enable-abort-handler`. Profile settings such
+      # as `panic = "abort"` and `strip = true` break its catch wrappers and
+      # make the crate undeployable while every other check stays green.
+      # A dry run runs the real build path and needs no Cloudflare credentials.
+      - name: Cache worker-build toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/worker-build
+          key: worker-build-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            worker-build-${{ runner.os }}-
+
+      - name: Deploy Dry Run
+        run: npx --yes wrangler@4.151.3 deploy --dry-run --outdir dist
+
+      - name: Report Shipped Module Size
+        run: |
+          wasm=$(ls dist/*.wasm | head -1)
+          bytes=$(stat -c%s "$wasm")
+          echo "shipped module: $wasm"
+          echo "size: $bytes bytes ($(( bytes / 1024 )) KiB, gzip target ~470 KiB)"
