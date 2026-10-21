@@ -1,10 +1,12 @@
 pub mod discord;
 pub mod matcher;
 pub mod models;
+pub mod profile;
 pub mod sokuja;
 pub mod telegram;
 
 use models::{EpisodeRelease, SamehadakuPost, TrackedAnime};
+use profile::{Stage, TickProfile};
 use worker::*;
 
 pub fn default_tracked_list() -> Vec<TrackedAnime> {
@@ -315,14 +317,18 @@ async fn mark_telegram_checked(kv: &KvStore) {
 pub async fn check_for_releases(
     tracked: &mut [TrackedAnime],
     kv: &KvStore,
+    profile: &mut TickProfile,
 ) -> Result<Vec<EpisodeRelease>> {
     let mut candidates: Vec<ReleaseCandidate> = Vec::new();
 
+    let started = profile::now_ms();
     match fetch_samehadaku_candidates().await {
         Ok(mut c) => candidates.append(&mut c),
         Err(e) => worker::console_error!("Source Samehadaku unavailable, skipping: {:?}", e),
     }
+    profile.record(Stage::Samehadaku, started, profile::now_ms());
 
+    let telegram_started = profile::now_ms();
     if telegram_due(kv).await {
         match telegram::fetch_posts().await {
             Ok(posts) => {
@@ -364,7 +370,9 @@ pub async fn check_for_releases(
     } else {
         worker::console_log!("Telegram bridge skipped, next poll window not reached");
     }
+    profile.record(Stage::Telegram, telegram_started, profile::now_ms());
 
+    let matching_started = profile::now_ms();
     let mut detected_releases = Vec::new();
 
     for cand in candidates {
@@ -386,11 +394,16 @@ pub async fn check_for_releases(
         }
     }
 
+    profile.record(Stage::Matching, matching_started, profile::now_ms());
+
     Ok(detected_releases)
 }
 
 #[event(scheduled)]
 pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    let tick_started = profile::now_ms();
+    let mut profile = TickProfile::default();
+
     let kv = match env.kv("ANIME_KV") {
         Ok(store) => store,
         Err(e) => {
@@ -399,6 +412,7 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
         }
     };
 
+    let kv_started = profile::now_ms();
     let mut tracked = match kv.get("tracked_anime").json::<Vec<TrackedAnime>>().await {
         Ok(Some(list)) => list,
         Ok(None) => {
@@ -415,13 +429,16 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
             default_tracked_list()
         }
     };
+    profile.record(Stage::KvRead, kv_started, profile::now_ms());
 
     merge_tracked_defaults(&mut tracked);
 
-    let releases = match check_for_releases(&mut tracked, &kv).await {
+    let releases = match check_for_releases(&mut tracked, &kv, &mut profile).await {
         Ok(r) => r,
         Err(e) => {
             worker::console_error!("Error checking releases: {:?}", e);
+            profile.total = profile::now_ms().saturating_sub(tick_started);
+            profile.log();
             return;
         }
     };
@@ -433,6 +450,8 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
             Ok(sec) => sec.to_string(),
             Err(e) => {
                 worker::console_error!("Missing secret DISCORD_WEBHOOK_URL: {:?}", e);
+                profile.total = profile::now_ms().saturating_sub(tick_started);
+                profile.log();
                 return;
             }
         };
@@ -451,6 +470,9 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
             }
         }
     }
+
+    profile.total = profile::now_ms().saturating_sub(tick_started);
+    profile.log();
 }
 
 #[event(fetch)]
@@ -558,6 +580,9 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             }
         })
         .post_async("/trigger", |_, ctx| async move {
+            let tick_started = profile::now_ms();
+            let mut profile = TickProfile::default();
+
             let kv = match ctx.env.kv("ANIME_KV") {
                 Ok(store) => store,
                 Err(e) => {
@@ -565,6 +590,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     return Response::error("Failed to access storage", 500);
                 }
             };
+            let kv_started = profile::now_ms();
             let mut tracked = match kv.get("tracked_anime").json::<Vec<TrackedAnime>>().await {
                 Ok(Some(list)) => list,
                 Ok(None) => default_tracked_list(),
@@ -573,9 +599,10 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     return Response::error("Failed to read storage", 500);
                 }
             };
+            profile.record(Stage::KvRead, kv_started, profile::now_ms());
             merge_tracked_defaults(&mut tracked);
 
-            let releases = match check_for_releases(&mut tracked, &kv).await {
+            let releases = match check_for_releases(&mut tracked, &kv, &mut profile).await {
                 Ok(r) => r,
                 Err(e) => {
                     worker::console_error!("Check error: {:?}", e);
@@ -606,7 +633,13 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     }
                 }
             }
-            let mut resp = Response::ok(format!(r#"{{"triggered":true,"new_releases":{}}}"#, count))?;
+            profile.total = profile::now_ms().saturating_sub(tick_started);
+            profile.log();
+            let profile_json = serde_json::to_string(&profile).unwrap_or_else(|_| "{}".to_string());
+            let mut resp = Response::ok(format!(
+                r#"{{"triggered":true,"new_releases":{},"profile":{}}}"#,
+                count, profile_json
+            ))?;
             resp.headers_mut().set("Content-Type", "application/json")?;
             Ok(resp)
         })
