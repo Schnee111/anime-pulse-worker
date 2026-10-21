@@ -452,12 +452,16 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
     // The KV read and the upstream sweep are independent, so run them together:
     // the Samehadaku round trip is ~670 ms and would otherwise sit idle while a
     // ~100 ms KV read finishes first.
-    let kv_started = profile::now_ms();
     let tracked_read = kv.get("tracked_anime");
+    let tracked_future = async {
+        let started = profile::now_ms();
+        let result = tracked_read.json::<Vec<TrackedAnime>>().await;
+        (result, profile::now_ms().saturating_sub(started).max(0))
+    };
     let sources_future = collect_sources(&kv);
-    let (sources, tracked_result) =
-        futures_util::future::join(sources_future, tracked_read.json::<Vec<TrackedAnime>>()).await;
-    profile.record(Stage::KvRead, kv_started, profile::now_ms());
+    let (sources, (tracked_result, kv_read_ms)) =
+        futures_util::future::join(sources_future, tracked_future).await;
+    profile.kv_read = kv_read_ms;
     profile.samehadaku = sources.samehadaku_ms;
     profile.telegram = sources.telegram_ms;
 
@@ -631,15 +635,16 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     return Response::error("Failed to access storage", 500);
                 }
             };
-            let kv_started = profile::now_ms();
             let tracked_read = kv.get("tracked_anime");
+            let tracked_future = async {
+                let started = profile::now_ms();
+                let result = tracked_read.json::<Vec<TrackedAnime>>().await;
+                (result, profile::now_ms().saturating_sub(started).max(0))
+            };
             let sources_future = collect_sources(&kv);
-            let (sources, tracked_result) = futures_util::future::join(
-                sources_future,
-                tracked_read.json::<Vec<TrackedAnime>>(),
-            )
-            .await;
-            profile.record(Stage::KvRead, kv_started, profile::now_ms());
+            let (sources, (tracked_result, kv_read_ms)) =
+                futures_util::future::join(sources_future, tracked_future).await;
+            profile.kv_read = kv_read_ms;
             profile.samehadaku = sources.samehadaku_ms;
             profile.telegram = sources.telegram_ms;
 
