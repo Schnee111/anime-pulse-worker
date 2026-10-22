@@ -15,10 +15,11 @@ pub const BOT_ICON: &str =
 pub fn build_single_release_payload(
     rel: &EpisodeRelease,
     timestamp_iso: &str,
+    timestamp_unix: u64,
 ) -> DiscordWebhookPayload {
     let title_fmt = short_title(&rel.title, 42);
     let desc = format!(
-        "`{timestamp_iso}`\n\n• **Episode {}** (Indonesian Subtitles)\n• Source: *{}*\n\n*Edge watcher triggered · Cloudflare Worker (Rust)*",
+        "<t:{timestamp_unix}:f> · <t:{timestamp_unix}:R>\n\n• **Episode {}** (Indonesian Subtitles)\n• Source: *{}*\n\n*Edge watcher triggered · Cloudflare Worker (Rust)*",
         rel.episode, rel.source
     );
 
@@ -62,13 +63,12 @@ pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]
     }
 
     // `js_sys::Date` gives ISO-8601 without pulling in a calendar crate.
-    let now_utc = js_sys::Date::new_0()
-        .to_iso_string()
-        .as_string()
-        .unwrap_or_default();
+    let now = js_sys::Date::new_0();
+    let now_utc = now.to_iso_string().as_string().unwrap_or_default();
+    let now_unix = (now.get_time() / 1000.0) as u64;
 
     for rel in releases {
-        let payload = build_single_release_payload(rel, &now_utc);
+        let payload = build_single_release_payload(rel, &now_utc, now_unix);
         let payload_json = serde_json::to_string(&payload)
             .map_err(|e| worker::Error::RustError(format!("JSON serialization error: {e}")))?;
 
@@ -118,10 +118,13 @@ mod tests {
             image_url: Some("https://img.youtube.com/vi/uvvYMBLY-w4/maxresdefault.jpg".into()),
         };
 
-        let payload = build_single_release_payload(&rel, "2026-10-18T16:00:00Z");
+        let payload = build_single_release_payload(&rel, "2026-10-18T16:00:00Z", 1792339200);
         assert_eq!(payload.embeds.len(), 1);
         let embed = &payload.embeds[0];
         assert_eq!(embed.title, "Ao no Hako Season 2 · Episode 3");
+        assert!(embed
+            .description
+            .contains("<t:1792339200:f> · <t:1792339200:R>"));
         assert!(embed.thumbnail.is_some());
         assert_eq!(
             embed.thumbnail.as_ref().unwrap().url,
