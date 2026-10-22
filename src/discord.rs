@@ -7,7 +7,7 @@ use worker::{js_sys, *};
 
 pub const SPECTRO_MINT: u32 = 7268279; // #6ee7b7
 pub const BOT_ICON: &str =
-    "https://cdn.discordapp.com/avatars/1515769326639120586/52a3abbcf5977cf4355af9340d2819c5.png";
+    "https://cdn.discordapp.com/avatars/1559227317958483998/b7b8f5fc455e84dbf226080c6b720778.png";
 
 /// Builds a dedicated Discord webhook payload for a single episode release.
 /// Keeping each anime in its own message ensures full-width 16:9 landscape image display
@@ -18,7 +18,7 @@ pub fn build_single_release_payload(
 ) -> DiscordWebhookPayload {
     let title_fmt = short_title(&rel.title, 42);
     let desc = format!(
-        "`{timestamp_iso}`\n\n• **Episode {}** Subtitle Indonesia\n• Sumber: *{}*\n\n*Edge watcher triggered · Cloudflare Worker (Rust)*",
+        "`{timestamp_iso}`\n\n• **Episode {}** (Indonesian Subtitles)\n• Source: *{}*\n\n*Edge watcher triggered · Cloudflare Worker (Rust)*",
         rel.episode, rel.source
     );
 
@@ -45,7 +45,7 @@ pub fn build_single_release_payload(
         thumbnail,
         image,
         footer: Some(DiscordEmbedFooter {
-            text: "Shorekeeper Edge Watcher · 1-Min Cloudflare Pulse".to_string(),
+            text: "Shorekeeper Edge Watcher".to_string(),
         }),
         timestamp: timestamp_iso.to_string(),
     };
