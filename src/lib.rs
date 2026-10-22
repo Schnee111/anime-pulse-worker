@@ -172,6 +172,14 @@ pub fn default_tracked_list() -> Vec<TrackedAnime> {
             thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx209502-C81oN8M4Smlo.jpg".into()),
             image_url: Some("https://img.youtube.com/vi/8XgKVzuLmJw/maxresdefault.jpg".into()),
         },
+        TrackedAnime {
+            id: "hyouken-suberu-s2".into(),
+            title: "Hyouken no Majutsushi ga Sekai wo Suberu Season 2".into(),
+            last_episode: 3,
+            url: "https://otakudesu.blog/anime/hyouken-suberu-s2-sub-indo/".into(),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx212503-sXBpRZr96c4e.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/oxkxyAcKv2g/maxresdefault.jpg".into()),
+        },
     ]
 }
 
