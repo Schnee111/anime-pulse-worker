@@ -21,6 +21,8 @@ pub struct TickProfile {
     pub samehadaku: i64,
     /// Telegram channel fetch + parse, or 0 when the throttle skipped it.
     pub telegram: i64,
+    /// Otakudesu series sweep across the watchlist, or 0 when throttled.
+    pub otakudesu: i64,
     /// Candidate-versus-watchlist matching loop.
     pub matching: i64,
     /// Wall time for the whole tick.
@@ -43,6 +45,7 @@ impl TickProfile {
             Stage::KvRead => self.kv_read = elapsed,
             Stage::Samehadaku => self.samehadaku = elapsed,
             Stage::Telegram => self.telegram = elapsed,
+            Stage::Otakudesu => self.otakudesu = elapsed,
             Stage::Matching => self.matching = elapsed,
         }
     }
@@ -50,10 +53,11 @@ impl TickProfile {
     /// Emits the single greppable line for this tick.
     pub fn log(&self) {
         console_log!(
-            "PROFILE kv_read={} samehadaku={} telegram={} matching={} total={}",
+            "PROFILE kv_read={} samehadaku={} telegram={} otakudesu={} matching={} total={}",
             self.kv_read,
             self.samehadaku,
             self.telegram,
+            self.otakudesu,
             self.matching,
             self.total
         );
@@ -63,7 +67,7 @@ impl TickProfile {
     /// is actually accounted for. Unaccounted time points at runtime overhead
     /// (module init, serialisation) rather than our own code.
     pub fn accounted(&self) -> i64 {
-        self.kv_read + self.samehadaku + self.telegram + self.matching
+        self.kv_read + self.samehadaku + self.telegram + self.otakudesu + self.matching
     }
 }
 
@@ -73,6 +77,7 @@ pub enum Stage {
     KvRead,
     Samehadaku,
     Telegram,
+    Otakudesu,
     Matching,
 }
 
@@ -106,6 +111,7 @@ mod tests {
             kv_read: 3,
             samehadaku: 40,
             telegram: 0,
+            otakudesu: 0,
             matching: 2,
             total: 60,
         };
