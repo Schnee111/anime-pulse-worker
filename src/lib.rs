@@ -1,6 +1,7 @@
 pub mod discord;
 pub mod matcher;
 pub mod models;
+pub mod otakudesu;
 pub mod profile;
 pub mod sokuja;
 pub mod telegram;
@@ -201,6 +202,10 @@ pub struct ReleaseCandidate {
     pub episode: u32,
     pub url: String,
     pub source: &'static str,
+    /// When set, the candidate is bound to one tracked entry by id and skips
+    /// fuzzy title matching. Otakudesu candidates use this: the series URL came
+    /// from that very entry, so re-deriving the title would only add risk.
+    pub anime_id: Option<String>,
 }
 
 /// Source 1: Samehadaku WP-JSON REST API (fast, structured).
@@ -243,6 +248,7 @@ async fn fetch_samehadaku_candidates() -> Result<Vec<ReleaseCandidate>> {
                 episode: episode_num,
                 url: post.link.clone(),
                 source: "Samehadaku API",
+                anime_id: None,
             });
         }
     }
@@ -272,40 +278,50 @@ const TELEGRAM_INTERVAL_MS: i64 = 15 * 60 * 1000;
 /// KV key holding the epoch-millis stamp of the last Telegram poll.
 const TELEGRAM_LAST_CHECK_KEY: &str = "telegram_last_check";
 
-/// True when the Telegram bridge is due for another poll.
+/// KV key holding the epoch-millis stamp of the last Otakudesu sweep.
+const OTAKUDESU_LAST_CHECK_KEY: &str = "otakudesu_last_check";
+
+/// Minimum gap between Otakudesu series sweeps.
 ///
-/// Fails open: if the stamp is missing or unreadable we poll, because a stray
+/// A sweep is one request per tracked title (20 today, capped at 5 in flight),
+/// which is far more expensive than a single JSON poll, so it runs on the same
+/// 15 minute cadence as the Telegram bridge rather than every tick.
+const OTAKUDESU_INTERVAL_MS: i64 = 15 * 60 * 1000;
+
+/// True when the stage guarded by `key` is due for another run.
+///
+/// Fails open: if the stamp is missing or unreadable we run, because a stray
 /// extra fetch costs far less than a silently dead source.
-async fn telegram_due(kv: &KvStore) -> bool {
+async fn throttle_due(kv: &KvStore, key: &str, interval_ms: i64) -> bool {
     let now = profile::now_ms();
-    match kv.get(TELEGRAM_LAST_CHECK_KEY).text().await {
+    match kv.get(key).text().await {
         Ok(Some(raw)) => match parse_stamp(&raw) {
-            Some(last) => now.saturating_sub(last) >= TELEGRAM_INTERVAL_MS,
+            Some(last) => now.saturating_sub(last) >= interval_ms,
             None => true,
         },
         _ => true,
     }
 }
 
-/// Parses the throttle stamp written by [`mark_telegram_checked`].
+/// Parses the throttle stamp written by [`mark_throttled`].
 ///
 /// `KvStore::put` serialises a `String` through `serde_json`, so the stored
 /// value comes back as `"<millis>"` with the quotes intact. Accepting both the
 /// quoted and the bare form keeps the throttle from silently failing open on
-/// every tick, which would poll the channel every 60 s.
+/// every tick, which would re-run the stage every 60 s.
 fn parse_stamp(raw: &str) -> Option<i64> {
     raw.trim().trim_matches('"').trim().parse::<i64>().ok()
 }
 
-/// Records the current time as the last Telegram poll attempt.
+/// Records the current time as the last run of the stage guarded by `key`.
 ///
 /// Marked on attempt rather than success so an outage cannot escalate into a
-/// poll every 60 s plus a 590 KB fallback download each time.
-async fn mark_telegram_checked(kv: &KvStore) {
+/// retry every tick, each with its full download cost.
+async fn mark_throttled(kv: &KvStore, key: &str) {
     let stamp = profile::now_ms().to_string();
-    if let Ok(put) = kv.put(TELEGRAM_LAST_CHECK_KEY, stamp) {
+    if let Ok(put) = kv.put(key, stamp) {
         if let Err(e) = put.execute().await {
-            worker::console_error!("Could not persist Telegram throttle stamp: {:?}", e);
+            worker::console_error!("Could not persist throttle stamp {}: {:?}", key, e);
         }
     }
 }
@@ -337,7 +353,7 @@ pub async fn collect_sources(kv: &KvStore) -> Sources {
 
     let throttle = async {
         let started = profile::now_ms();
-        let due = telegram_due(kv).await;
+        let due = throttle_due(kv, TELEGRAM_LAST_CHECK_KEY, TELEGRAM_INTERVAL_MS).await;
         (due, profile::now_ms().saturating_sub(started).max(0))
     };
 
@@ -355,7 +371,7 @@ pub async fn collect_sources(kv: &KvStore) -> Sources {
         let started = profile::now_ms();
         match telegram::fetch_posts().await {
             Ok(posts) => {
-                mark_telegram_checked(kv).await;
+                mark_throttled(kv, TELEGRAM_LAST_CHECK_KEY).await;
                 worker::console_log!("Telegram bridge reported {} release posts", posts.len());
                 for p in posts {
                     candidates.push(ReleaseCandidate {
@@ -363,11 +379,12 @@ pub async fn collect_sources(kv: &KvStore) -> Sources {
                         episode: p.episode,
                         url: p.url,
                         source: "Sokuja (Telegram)",
+                        anime_id: None,
                     });
                 }
             }
             Err(e) => {
-                mark_telegram_checked(kv).await;
+                mark_throttled(kv, TELEGRAM_LAST_CHECK_KEY).await;
                 worker::console_error!(
                     "Telegram bridge unavailable ({}), falling back to Sokuja HTML",
                     e
@@ -381,6 +398,7 @@ pub async fn collect_sources(kv: &KvStore) -> Sources {
                                 episode: e.episode,
                                 url: e.url,
                                 source: "Sokuja",
+                                anime_id: None,
                             });
                         }
                     }
@@ -402,6 +420,61 @@ pub async fn collect_sources(kv: &KvStore) -> Sources {
     }
 }
 
+/// Sweeps every tracked series page on Otakudesu.
+///
+/// Concurrency is capped at 5: Workers Free allows only 6 simultaneous outgoing
+/// connections per invocation, so 20 series must never be fired at once. Each
+/// candidate is bound to its tracked id, because the series URL came from that
+/// entry and re-deriving a title would only add matching risk.
+async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> Vec<ReleaseCandidate> {
+    use futures_util::stream::{self, StreamExt};
+
+    let targets: Vec<(String, String, String)> = tracked
+        .iter()
+        .filter(|entry| entry.url.contains("otakudesu"))
+        .map(|entry| (entry.id.clone(), entry.title.clone(), entry.url.clone()))
+        .collect();
+
+    if targets.is_empty() {
+        return Vec::new();
+    }
+
+    let results =
+        stream::iter(targets.into_iter().map(|(id, title, url)| async move {
+            (id, title, otakudesu::fetch_series(&url).await)
+        }))
+        .buffer_unordered(5)
+        .collect::<Vec<_>>()
+        .await;
+
+    let mut candidates = Vec::new();
+    let mut fetched = 0usize;
+    let mut failed = 0usize;
+
+    for (id, title, outcome) in results {
+        match outcome {
+            Ok(release) => {
+                fetched += 1;
+                candidates.push(ReleaseCandidate {
+                    title,
+                    episode: release.episode,
+                    url: release.url,
+                    source: "Otakudesu",
+                    anime_id: Some(id),
+                });
+            }
+            Err(_) => failed += 1,
+        }
+    }
+
+    worker::console_log!(
+        "Otakudesu sweep: {} series read, {} unavailable",
+        fetched,
+        failed
+    );
+    candidates
+}
+
 /// Matches candidates against the watchlist, advancing `last_episode`.
 ///
 /// Pure apart from the `last_episode` mutation, so it is unit-testable without
@@ -416,9 +489,11 @@ pub fn match_releases(
 
     for cand in candidates {
         for item in tracked.iter_mut() {
-            if cand.episode > item.last_episode
-                && matcher::matches_tracked(&item.title, &cand.title)
-            {
+            let title_matches = match cand.anime_id.as_deref() {
+                Some(id) => id == item.id,
+                None => matcher::matches_tracked(&item.title, &cand.title),
+            };
+            if cand.episode > item.last_episode && title_matches {
                 item.last_episode = cand.episode;
                 detected_releases.push(EpisodeRelease {
                     anime_id: item.id.clone(),
@@ -484,8 +559,22 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
 
     merge_tracked_defaults(&mut tracked);
 
+    // Otakudesu needs the watchlist URLs, so it cannot overlap the KV read.
+    // It is throttled to one sweep per 15 minutes to keep 20 fetches off most
+    // ticks, and its candidates are appended last so Samehadaku and the Sokuja
+    // mirror still win any duplicate.
+    let otakudesu_started = profile::now_ms();
+    let mut candidates = sources.candidates;
+    if throttle_due(&kv, OTAKUDESU_LAST_CHECK_KEY, OTAKUDESU_INTERVAL_MS).await {
+        mark_throttled(&kv, OTAKUDESU_LAST_CHECK_KEY).await;
+        candidates.extend(sweep_otakudesu(&tracked).await);
+    } else {
+        worker::console_log!("Otakudesu sweep skipped, next window not reached");
+    }
+    profile.record(Stage::Otakudesu, otakudesu_started, profile::now_ms());
+
     let matching_started = profile::now_ms();
-    let releases = match_releases(&mut tracked, sources.candidates);
+    let releases = match_releases(&mut tracked, candidates);
     profile.record(Stage::Matching, matching_started, profile::now_ms());
 
     if !releases.is_empty() {
@@ -658,8 +747,18 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             };
             merge_tracked_defaults(&mut tracked);
 
+            let otakudesu_started = profile::now_ms();
+            let mut candidates = sources.candidates;
+            if throttle_due(&kv, OTAKUDESU_LAST_CHECK_KEY, OTAKUDESU_INTERVAL_MS).await {
+                mark_throttled(&kv, OTAKUDESU_LAST_CHECK_KEY).await;
+                candidates.extend(sweep_otakudesu(&tracked).await);
+            } else {
+                worker::console_log!("Otakudesu sweep skipped, next window not reached");
+            }
+            profile.record(Stage::Otakudesu, otakudesu_started, profile::now_ms());
+
             let matching_started = profile::now_ms();
-            let releases = match_releases(&mut tracked, sources.candidates);
+            let releases = match_releases(&mut tracked, candidates);
             profile.record(Stage::Matching, matching_started, profile::now_ms());
 
             let count = releases.len();
@@ -741,6 +840,7 @@ mod match_tests {
             episode,
             url: format!("https://example.test/{episode}"),
             source,
+            anime_id: None,
         }
     }
 
@@ -800,6 +900,56 @@ mod match_tests {
 
         assert!(out.is_empty());
         assert_eq!(list[0].last_episode, 5);
+    }
+
+    #[test]
+    fn id_bound_candidate_matches_even_when_titles_differ() {
+        // Otakudesu candidates carry the tracked id because the series URL came
+        // from that entry; title similarity must not be required.
+        let mut list = vec![tracked(
+            "tensei-shita-daiseijo",
+            "Tensei shita Daiseijo wa, Seijo de Aru Koto wo Hitakakusu",
+            3,
+        )];
+        let out = match_releases(
+            &mut list,
+            vec![ReleaseCandidate {
+                title: String::new(),
+                episode: 4,
+                url: "https://otakudesu.blog/episode/tsds-episode-4-sub-indo/".to_string(),
+                source: "Otakudesu",
+                anime_id: Some("tensei-shita-daiseijo".to_string()),
+            }],
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].episode, 4);
+        assert_eq!(out[0].source, "Otakudesu");
+        assert_eq!(list[0].last_episode, 4);
+    }
+
+    #[test]
+    fn id_bound_candidate_ignores_other_entries() {
+        let mut list = vec![
+            tracked("a", "Kyouran Reijou Nia Liston", 2),
+            tracked("b", "Psyren", 1),
+        ];
+        let out = match_releases(
+            &mut list,
+            vec![ReleaseCandidate {
+                title: "Psyren".to_string(),
+                episode: 5,
+                url: "https://otakudesu.blog/episode/psyren-episode-5-sub-indo/".to_string(),
+                source: "Otakudesu",
+                anime_id: Some("a".to_string()),
+            }],
+        );
+
+        // Bound to "a" by id, so it must not touch "b" despite the matching title.
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].anime_id, "a");
+        assert_eq!(list[0].last_episode, 5);
+        assert_eq!(list[1].last_episode, 1);
     }
 
     #[test]
