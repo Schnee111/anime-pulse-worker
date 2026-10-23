@@ -81,6 +81,10 @@ pub async fn fetch_posts() -> Result<Vec<TelegramPost>> {
 /// stamp and a `tgme_widget_message_text` body. The body is flattened to plain
 /// text, then split on `Episode N`, which lets us recover the full title even
 /// when it contains punctuation or a trailing period.
+///
+/// Ordering matters: the preview renders **oldest-first**, so posts are sorted
+/// newest-first before returning. Without that, a consumer that evaluates
+/// candidates in order picks last week's episode over today's.
 pub fn parse_posts(html: &str) -> Vec<TelegramPost> {
     let mut posts: Vec<TelegramPost> = Vec::new();
     // `split` on the marker yields the preamble first, so trailing blocks are
@@ -109,6 +113,10 @@ pub fn parse_posts(html: &str) -> Vec<TelegramPost> {
             continue;
         };
 
+        // The `datetime` attribute lives on the bubble wrapper, which is part of
+        // `block`, so it is unique per post. Reading it outside the split (or
+        // once for the whole page) collapses every post onto one timestamp and
+        // destroys candidate ordering.
         let published_at = TIME_RE
             .captures(block)
             .map(|c| c[1].to_string())
@@ -125,6 +133,11 @@ pub fn parse_posts(html: &str) -> Vec<TelegramPost> {
             published_at,
         });
     }
+
+    // Newest first. Timestamps are ISO-8601 with an explicit offset, so a plain
+    // string compare orders them correctly; posts without a stamp sink to the end
+    // instead of silently claiming to be the newest.
+    posts.sort_by(|a, b| b.published_at.cmp(&a.published_at));
 
     posts
 }
@@ -223,5 +236,79 @@ mod tests {
   <div class="tgme_widget_message_text">Just an announcement, no release here</div>
 </div>"#;
         assert!(parse_posts(html).is_empty());
+    }
+
+    /// Regression for issue #30. The preview exposes one `datetime` per bubble
+    /// wrapper; reading it once for the page collapsed all posts onto the same
+    /// stamp, which made candidate ordering meaningless.
+    #[test]
+    fn every_post_keeps_its_own_timestamp_and_newest_comes_first() {
+        // Deliberately oldest-first, exactly as `t.me/s/<channel>` renders it.
+        let html = r#"
+<div class="tgme_widget_message_wrap">
+  <div class="tgme_widget_message">
+    <time datetime="2026-10-20T13:49:02+00:00"></time>
+    <div class="tgme_widget_message_text">🔥 Koori no Jouheki Season 2 Episode 2 Subtitle Indonesia 🔥
+      <br/>https://sokuja.net/koori-no-jouheki-season-2-episode-2-subtitle-indonesia/</div>
+  </div>
+</div>
+<div class="tgme_widget_message_wrap">
+  <div class="tgme_widget_message">
+    <time datetime="2026-10-22T12:04:11+00:00"></time>
+    <div class="tgme_widget_message_text">🔥 Koori no Jouheki Season 2 Episode 3 Subtitle Indonesia 🔥
+      <br/>https://sokuja.net/koori-no-jouheki-season-2-episode-3-subtitle-indonesia/</div>
+  </div>
+</div>
+<div class="tgme_widget_message_wrap">
+  <div class="tgme_widget_message">
+    <time datetime="2026-10-22T16:12:33+00:00"></time>
+    <div class="tgme_widget_message_text">🔥 Koori no Jouheki Season 2 Episode 4 Subtitle Indonesia 🔥
+      <br/>https://sokuja.net/koori-no-jouheki-season-2-episode-4-subtitle-indonesia/</div>
+  </div>
+</div>"#;
+
+        let posts = parse_posts(html);
+        assert_eq!(posts.len(), 3);
+
+        let stamps: Vec<&str> = posts.iter().map(|p| p.published_at.as_str()).collect();
+        let unique: std::collections::HashSet<&str> = stamps.iter().copied().collect();
+        assert_eq!(unique.len(), 3, "each post must keep its own timestamp");
+
+        assert_eq!(posts[0].episode, 4, "newest release must come first");
+        assert_eq!(posts[1].episode, 3);
+        assert_eq!(posts[2].episode, 2);
+        assert_eq!(posts[0].published_at, "2026-10-22T16:12:33+00:00");
+    }
+
+    /// A bubble without a `datetime` must degrade to an empty stamp instead of
+    /// inheriting another post's timestamp.
+    #[test]
+    fn missing_timestamp_does_not_borrow_another_posts_stamp() {
+        let html = r#"
+<div class="tgme_widget_message_wrap">
+  <div class="tgme_widget_message">
+    <time datetime="2026-10-20T13:49:02+00:00"></time>
+    <div class="tgme_widget_message_text">FX Senshi Kurumi-chan Episode 2 Subtitle Indonesia
+      <br/>https://sokuja.net/fx-senshi-kurumi-chan-episode-2-subtitle-indonesia/</div>
+  </div>
+</div>
+<div class="tgme_widget_message_wrap">
+  <div class="tgme_widget_message">
+    <div class="tgme_widget_message_text">Romelia Senki Episode 3 Subtitle Indonesia
+      <br/>https://sokuja.net/romelia-senki-episode-3-subtitle-indonesia/</div>
+  </div>
+</div>"#;
+
+        let posts = parse_posts(html);
+        assert_eq!(posts.len(), 2);
+        let stamped = posts.iter().find(|p| p.title.starts_with("FX")).unwrap();
+        let unstamped = posts
+            .iter()
+            .find(|p| p.title.starts_with("Romelia"))
+            .unwrap();
+        assert_eq!(stamped.published_at, "2026-10-20T13:49:02+00:00");
+        assert_eq!(unstamped.published_at, "");
+        // An unstamped post must never sort above a stamped one.
+        assert_eq!(posts[0].title.starts_with("FX"), true);
     }
 }
