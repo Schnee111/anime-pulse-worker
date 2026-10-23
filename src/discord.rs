@@ -56,10 +56,21 @@ pub fn build_single_release_payload(
     }
 }
 
-/// Dispatches each release as a separate Discord message so each has its own clean embed & dual visuals
+/// Dispatches each release as a separate Discord message to all configured webhooks
+/// (supports comma-separated URLs for multi-channel / multi-guild broadcast).
 pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]) -> Result<()> {
     if releases.is_empty() {
         return Ok(());
+    }
+
+    let targets: Vec<&str> = webhook_url
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if targets.is_empty() {
+        return Err(worker::Error::RustError("No webhook URL provided".into()));
     }
 
     // `js_sys::Date` gives ISO-8601 without pulling in a calendar crate.
@@ -67,34 +78,43 @@ pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]
     let now_utc = now.to_iso_string().as_string().unwrap_or_default();
     let now_unix = (now.get_time() / 1000.0) as u64;
 
+    let mut any_success = false;
+
     for rel in releases {
         let payload = build_single_release_payload(rel, &now_utc, now_unix);
         let payload_json = serde_json::to_string(&payload)
             .map_err(|e| worker::Error::RustError(format!("JSON serialization error: {e}")))?;
 
-        let headers = Headers::new();
-        headers.set("Content-Type", "application/json")?;
-        headers.set("User-Agent", "AnimePulseWorker/1.0 (Cloudflare Rust)")?;
+        for target_url in &targets {
+            let headers = Headers::new();
+            headers.set("Content-Type", "application/json")?;
+            headers.set("User-Agent", "AnimePulseWorker/1.0 (Cloudflare Rust)")?;
 
-        let mut init = RequestInit::new();
-        init.with_method(Method::Post);
-        init.with_headers(headers);
-        init.with_body(Some(wasm_bindgen::JsValue::from_str(&payload_json)));
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post);
+            init.with_headers(headers);
+            init.with_body(Some(wasm_bindgen::JsValue::from_str(&payload_json)));
 
-        let request = Request::new_with_init(webhook_url, &init)?;
-        let response = Fetch::Request(request).send().await?;
+            let request = Request::new_with_init(target_url, &init)?;
+            let response = Fetch::Request(request).send().await?;
 
-        if response.status_code() < 200 || response.status_code() >= 300 {
-            worker::console_error!(
-                "Discord webhook dispatch failed for {} with status: {}",
-                rel.title,
-                response.status_code()
-            );
-            return Err(worker::Error::RustError(format!(
-                "Discord webhook returned HTTP {}",
-                response.status_code()
-            )));
+            if response.status_code() >= 200 && response.status_code() < 300 {
+                any_success = true;
+            } else {
+                worker::console_error!(
+                    "Discord webhook dispatch failed for {} to {} with status: {}",
+                    rel.title,
+                    target_url,
+                    response.status_code()
+                );
+            }
         }
+    }
+
+    if !any_success {
+        return Err(worker::Error::RustError(
+            "All Discord webhook dispatches failed".into(),
+        ));
     }
 
     Ok(())
