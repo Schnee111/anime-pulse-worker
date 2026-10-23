@@ -22,7 +22,10 @@ pub fn parse_release_title(raw_title: &str) -> Option<(String, u32)> {
 /// Telegram Sokuja 20 posts, 21 tracked titles), the previous rule produced 16
 /// such cross-title matches; these thresholds reduce that to 0 without dropping
 /// any of the 12 legitimate matches.
-const MIN_COVERAGE: f32 = 0.5;
+///
+/// The bar is a **strict** majority, not `>= 0.5`: with `>= 0.5` a 2-keyword
+/// title still matched on a single shared word ("Romelia Senki" vs "Youjo
+/// Senki"), which is exactly the failure this change is meant to remove.
 const MIN_ANCHOR_LEN: usize = 4;
 
 fn stop_words() -> HashSet<&'static str> {
@@ -100,8 +103,8 @@ fn extract_significant_keywords(title: &str) -> HashSet<String> {
 /// Matches tracked anime title against candidate title using keyword token overlap.
 ///
 /// Filters generic terms (`season`, `part`, `sub`, and the Japanese particles
-/// that dominate romanised titles), then requires both a majority coverage of
-/// the tracked title's keywords and at least one shared token long enough to be
+/// that dominate romanised titles), then requires a strict majority of the
+/// tracked title's keywords plus at least one shared token long enough to be
 /// distinctive. A bare overlap count is not enough: two unrelated sequels share
 /// `{2}` plus a particle and nothing else.
 pub fn matches_tracked(tracked_title: &str, candidate_title: &str) -> bool {
@@ -117,10 +120,19 @@ pub fn matches_tracked(tracked_title: &str, candidate_title: &str) -> bool {
         return true;
     }
 
-    let coverage = overlap.len() as f32 / kw_tracked.len() as f32;
+    // A full keyword match is decisive on its own. Without this short-circuit a
+    // title made only of short words (`Eat-Man`, `Run Dim`) could never pass the
+    // anchor check even when every keyword matched.
+    if overlap.len() == kw_tracked.len() {
+        return true;
+    }
+
+    // Strict majority: `overlap * 2 > tracked`. For a 2-keyword title that means
+    // both words, so `Romelia Senki` no longer matches `Youjo Senki` on `senki`.
+    let is_strict_majority = overlap.len() * 2 > kw_tracked.len();
     let has_anchor = overlap.iter().any(|w| w.chars().count() >= MIN_ANCHOR_LEN);
 
-    coverage >= MIN_COVERAGE && has_anchor
+    is_strict_majority && has_anchor
 }
 
 /// Shortens a title with an ellipsis if it exceeds max_len.
@@ -308,5 +320,25 @@ mod tests {
             ),
             "Tenkou-saki no Seiso Kar…"
         );
+    }
+
+    /// Review follow-up on issue #29. A `>= 0.5` coverage threshold still let a
+    /// 2-keyword title match on one shared word, so the bar is a strict majority.
+    #[test]
+    fn two_keyword_title_does_not_match_on_one_shared_word() {
+        assert!(!matches_tracked("Romelia Senki", "Youjo Senki"));
+        assert!(!matches_tracked("Romelia Senki", "Senki to Yobareta Otoko"));
+        // Both words still match.
+        assert!(matches_tracked("Romelia Senki", "Romelia Senki"));
+    }
+
+    /// Review follow-up on issue #29. The anchor rule must not reject a title
+    /// that only contains short words: a full keyword match is decisive.
+    #[test]
+    fn exact_match_of_short_words_is_accepted() {
+        assert!(matches_tracked("Eat-Man", "Eat-Man"));
+        assert!(matches_tracked("Run Dim", "Run Dim"));
+        // A different short-word title must still be rejected.
+        assert!(!matches_tracked("Eat-Man", "Run Dim"));
     }
 }

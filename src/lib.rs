@@ -490,7 +490,7 @@ async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> Vec<ReleaseCandidate> {
 /// `last_episode` advances on the first match, a duplicate episode from a
 /// second source produces exactly one notification.
 pub fn match_releases(
-    tracked: &mut [TrackedAnime],
+    tracked: &[TrackedAnime],
     candidates: Vec<ReleaseCandidate>,
 ) -> Vec<EpisodeRelease> {
     // Collapse per tracked entry first, keeping the highest episode and the
@@ -521,7 +521,7 @@ pub fn match_releases(
 
     let mut detected_releases = Vec::new();
     for (idx, cand) in best {
-        let item = &mut tracked[idx];
+        let item = &tracked[idx];
         // Not yet committed to KV: the caller only persists the episodes it
         // actually delivered, so a failed webhook is retried on the next tick
         // instead of being lost.
@@ -624,7 +624,7 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
     profile.record(Stage::Otakudesu, otakudesu_started, profile::now_ms());
 
     let matching_started = profile::now_ms();
-    let releases = match_releases(&mut tracked, candidates);
+    let releases = match_releases(&tracked, candidates);
     profile.record(Stage::Matching, matching_started, profile::now_ms());
 
     if !releases.is_empty() {
@@ -812,7 +812,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             profile.record(Stage::Otakudesu, otakudesu_started, profile::now_ms());
 
             let matching_started = profile::now_ms();
-            let releases = match_releases(&mut tracked, candidates);
+            let releases = match_releases(&tracked, candidates);
             profile.record(Stage::Matching, matching_started, profile::now_ms());
 
             let count = releases.len();
@@ -915,7 +915,7 @@ mod match_tests {
             3,
         )];
         let out = match_releases(
-            &mut list,
+            &list,
             vec![candidate(
                 "Shiotaiou no Satou-san ga Ore ni dake Amai",
                 4,
@@ -937,7 +937,7 @@ mod match_tests {
     fn same_episode_from_two_sources_yields_a_single_notification() {
         let mut list = vec![tracked("kyouran", "Kyouran Reijou Nia Liston", 2)];
         let out = match_releases(
-            &mut list,
+            &list,
             vec![
                 candidate("Kyouran Reijou Nia Liston", 3, "Samehadaku API"),
                 candidate(
@@ -957,9 +957,9 @@ mod match_tests {
 
     #[test]
     fn older_or_equal_episodes_are_ignored() {
-        let mut list = vec![tracked("psyren", "Psyren", 5)];
+        let list = vec![tracked("psyren", "Psyren", 5)];
         let out = match_releases(
-            &mut list,
+            &list,
             vec![
                 candidate("Psyren", 5, "Samehadaku API"),
                 candidate("Psyren", 4, "Samehadaku API"),
@@ -980,7 +980,7 @@ mod match_tests {
             3,
         )];
         let out = match_releases(
-            &mut list,
+            &list,
             vec![ReleaseCandidate {
                 title: String::new(),
                 episode: 4,
@@ -1004,7 +1004,7 @@ mod match_tests {
             tracked("b", "Psyren", 1),
         ];
         let out = match_releases(
-            &mut list,
+            &list,
             vec![ReleaseCandidate {
                 title: "Psyren".to_string(),
                 episode: 5,
@@ -1024,9 +1024,9 @@ mod match_tests {
 
     #[test]
     fn unrelated_titles_never_match() {
-        let mut list = vec![tracked("psyren", "Psyren", 1)];
+        let list = vec![tracked("psyren", "Psyren", 1)];
         let out = match_releases(
-            &mut list,
+            &list,
             vec![candidate(
                 "Dragon Ball Super: Beerus",
                 2,
@@ -1048,7 +1048,7 @@ mod match_tests {
 
         // Newest first: no ascending order to lean on.
         let out = match_releases(
-            &mut list,
+            &list,
             vec![
                 candidate("Ao no Hako Season 2", 4, "Sokuja (Telegram)"),
                 candidate("Ao no Hako 2nd Season", 3, "Sokuja (Telegram)"),
@@ -1068,7 +1068,7 @@ mod match_tests {
     #[test]
     fn undelivered_release_does_not_advance_state() {
         let mut list = vec![tracked("psyren", "Psyren", 2)];
-        let detected = match_releases(&mut list, vec![candidate("Psyren", 3, "Samehadaku API")]);
+        let detected = match_releases(&list, vec![candidate("Psyren", 3, "Samehadaku API")]);
         assert_eq!(detected.len(), 1);
 
         // Discord reported zero delivered targets.
