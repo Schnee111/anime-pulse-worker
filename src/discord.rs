@@ -56,6 +56,16 @@ pub fn build_single_release_payload(
     }
 }
 
+/// Redacts the secret token segment from a Discord webhook URL for safe logging.
+pub fn mask_webhook_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if let Some(idx) = trimmed.rfind('/') {
+        format!("{}/[REDACTED]", &trimmed[..idx])
+    } else {
+        "[REDACTED_WEBHOOK]".to_string()
+    }
+}
+
 /// Dispatches each release as a separate Discord message to all configured webhooks
 /// (supports comma-separated URLs for multi-channel / multi-guild broadcast).
 pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]) -> Result<()> {
@@ -78,14 +88,14 @@ pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]
     let now_utc = now.to_iso_string().as_string().unwrap_or_default();
     let now_unix = (now.get_time() / 1000.0) as u64;
 
-    let mut any_success = false;
-
     for rel in releases {
         let payload = build_single_release_payload(rel, &now_utc, now_unix);
         let payload_json = serde_json::to_string(&payload)
             .map_err(|e| worker::Error::RustError(format!("JSON serialization error: {e}")))?;
 
-        for target_url in &targets {
+        let mut rel_delivered = false;
+
+        for (idx, target_url) in targets.iter().enumerate() {
             let headers = Headers::new();
             headers.set("Content-Type", "application/json")?;
             headers.set("User-Agent", "AnimePulseWorker/1.0 (Cloudflare Rust)")?;
@@ -95,26 +105,52 @@ pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]
             init.with_headers(headers);
             init.with_body(Some(wasm_bindgen::JsValue::from_str(&payload_json)));
 
-            let request = Request::new_with_init(target_url, &init)?;
-            let response = Fetch::Request(request).send().await?;
+            let request = match Request::new_with_init(target_url, &init) {
+                Ok(req) => req,
+                Err(e) => {
+                    worker::console_error!(
+                        "Failed to create request for {} to webhook #{} ({}): {:?}",
+                        rel.title,
+                        idx + 1,
+                        mask_webhook_url(target_url),
+                        e
+                    );
+                    continue;
+                }
+            };
 
-            if response.status_code() >= 200 && response.status_code() < 300 {
-                any_success = true;
-            } else {
-                worker::console_error!(
-                    "Discord webhook dispatch failed for {} to {} with status: {}",
-                    rel.title,
-                    target_url,
-                    response.status_code()
-                );
+            match Fetch::Request(request).send().await {
+                Ok(resp) => {
+                    if resp.status_code() >= 200 && resp.status_code() < 300 {
+                        rel_delivered = true;
+                    } else {
+                        worker::console_error!(
+                            "Discord webhook dispatch failed for {} to webhook #{} ({}) with status: {}",
+                            rel.title,
+                            idx + 1,
+                            mask_webhook_url(target_url),
+                            resp.status_code()
+                        );
+                    }
+                }
+                Err(e) => {
+                    worker::console_error!(
+                        "Discord webhook fetch error for {} to webhook #{} ({}): {:?}",
+                        rel.title,
+                        idx + 1,
+                        mask_webhook_url(target_url),
+                        e
+                    );
+                }
             }
         }
-    }
 
-    if !any_success {
-        return Err(worker::Error::RustError(
-            "All Discord webhook dispatches failed".into(),
-        ));
+        if !rel_delivered {
+            return Err(worker::Error::RustError(format!(
+                "Failed to deliver release '{}' to any configured webhook",
+                rel.title
+            )));
+        }
     }
 
     Ok(())
@@ -155,5 +191,14 @@ mod tests {
             embed.image.as_ref().unwrap().url,
             "https://img.youtube.com/vi/uvvYMBLY-w4/maxresdefault.jpg"
         );
+    }
+
+    #[test]
+    fn test_mask_webhook_url() {
+        assert_eq!(
+            mask_webhook_url("https://discord.com/api/webhooks/12345/abcdef_secret_token"),
+            "https://discord.com/api/webhooks/12345/[REDACTED]"
+        );
+        assert_eq!(mask_webhook_url("invalid_url"), "[REDACTED_WEBHOOK]");
     }
 }
