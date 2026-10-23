@@ -12,6 +12,19 @@ pub fn parse_release_title(raw_title: &str) -> Option<(String, u32)> {
     Some((title, episode))
 }
 
+/// Minimum share of a tracked title's keywords that a candidate must share, and
+/// the shortest distinctive token that may carry a match on its own.
+///
+/// Romanised Japanese titles lean hard on particles, so a pure overlap count is
+/// not evidence of anything: "Chitose-kun wa Ramune Bin no Naka Part 2" and
+/// "Ao no Hako Season 2" share `{2, no}` and nothing else, yet cleared the old
+/// 2-token rule. Measured against a live feed snapshot (Samehadaku 20 posts +
+/// Telegram Sokuja 20 posts, 21 tracked titles), the previous rule produced 16
+/// such cross-title matches; these thresholds reduce that to 0 without dropping
+/// any of the 12 legitimate matches.
+const MIN_COVERAGE: f32 = 0.5;
+const MIN_ANCHOR_LEN: usize = 4;
+
 fn stop_words() -> HashSet<&'static str> {
     [
         "season",
@@ -19,6 +32,10 @@ fn stop_words() -> HashSet<&'static str> {
         "3rd",
         "4th",
         "5th",
+        "second",
+        "third",
+        "fourth",
+        "fifth",
         "part",
         "sub",
         "indo",
@@ -28,6 +45,43 @@ fn stop_words() -> HashSet<&'static str> {
         "the",
         "and",
         "cour",
+        // Particles and filler that appear in almost every romanised title. They
+        // carry no series identity, and counting them is what let unrelated
+        // titles match each other on `no` + `2` alone.
+        "no",
+        "wa",
+        "ga",
+        "ni",
+        "wo",
+        "de",
+        "to",
+        "na",
+        "mo",
+        "ka",
+        "yo",
+        "ne",
+        "kara",
+        "made",
+        "dake",
+        "suru",
+        "shita",
+        "ore",
+        "sore",
+        "kore",
+        "are",
+        "desu",
+        "masu",
+        "aru",
+        "iru",
+        "koto",
+        "mono",
+        "naka",
+        "hito",
+        "you",
+        "sama",
+        "san",
+        "kun",
+        "chan",
     ]
     .iter()
     .copied()
@@ -44,25 +98,29 @@ fn extract_significant_keywords(title: &str) -> HashSet<String> {
 }
 
 /// Matches tracked anime title against candidate title using keyword token overlap.
-/// Filters out generic terms like "season", "2nd", "3rd", "sub", "indo".
+///
+/// Filters generic terms (`season`, `part`, `sub`, and the Japanese particles
+/// that dominate romanised titles), then requires both a majority coverage of
+/// the tracked title's keywords and at least one shared token long enough to be
+/// distinctive. A bare overlap count is not enough: two unrelated sequels share
+/// `{2}` plus a particle and nothing else.
 pub fn matches_tracked(tracked_title: &str, candidate_title: &str) -> bool {
     let kw_tracked = extract_significant_keywords(tracked_title);
     let kw_candidate = extract_significant_keywords(candidate_title);
 
-    let overlap = kw_tracked.intersection(&kw_candidate).count();
-    if overlap == 0 {
+    let overlap: HashSet<&String> = kw_tracked.intersection(&kw_candidate).collect();
+    if overlap.is_empty() {
         return false;
     }
 
     if kw_tracked.len() <= 1 {
-        overlap >= 1
-    } else if kw_tracked.len() == 2 {
-        overlap >= 2
-    } else {
-        // For longer titles (3+ keywords), require at least 2 overlapping keywords
-        // and at least 35% overlap of the tracked keywords.
-        overlap >= 2 && ((overlap as f32 / kw_tracked.len() as f32) >= 0.35)
+        return true;
     }
+
+    let coverage = overlap.len() as f32 / kw_tracked.len() as f32;
+    let has_anchor = overlap.iter().any(|w| w.chars().count() >= MIN_ANCHOR_LEN);
+
+    coverage >= MIN_COVERAGE && has_anchor
 }
 
 /// Shortens a title with an ellipsis if it exceeds max_len.
@@ -129,6 +187,115 @@ mod tests {
             "Koori no Jouheki Season 2",
             "Tokyo Revengers Season 4"
         ));
+    }
+
+    /// Regression for issue #29. Each pair was a live false match taken from a
+    /// real feed snapshot (Samehadaku 20 posts + Telegram Sokuja 20 posts
+    /// against 21 tracked titles, 2026-10-23): the candidate release was being
+    /// attributed to a completely unrelated tracked title.
+    #[test]
+    fn unrelated_titles_sharing_only_particles_do_not_match() {
+        let cases = [
+            // Chitose-kun was claimed by both Koori and Ao no Hako on {2, no}.
+            (
+                "Ao no Hako Season 2",
+                "Chitose-kun wa Ramune Bin no Naka Part 2",
+            ),
+            (
+                "Koori no Jouheki Season 2",
+                "Chitose-kun wa Ramune Bin no Naka Part 2",
+            ),
+            (
+                "Tantei wa Mou, Shindeiru. Season 2",
+                "Chitose-kun wa Ramune Bin no Naka Part 2",
+            ),
+            // Kikansha was claimed by three unrelated sequels.
+            (
+                "Ao no Hako Season 2",
+                "Kikansha no Mahou wa Tokubetsu desu Season 2",
+            ),
+            (
+                "Koori no Jouheki Season 2",
+                "Kikansha no Mahou wa Tokubetsu desu Season 2",
+            ),
+            (
+                "Tantei wa Mou, Shindeiru. Season 2",
+                "Kikansha no Mahou wa Tokubetsu desu Season 2",
+            ),
+            // Tsuihou Cheat was claimed on {dake, ni, no, ore} + a shared verb.
+            (
+                "Shiotaiou no Satou-san ga Ore ni dake Amai",
+                "Tsuihou sareta Cheat Fuyo Majutsushi wa Kimama na Second Life wo Ouka suru",
+            ),
+            (
+                "Doumo, Suki na Hito ni Horegusuri wo Irai sareta Majo desu.",
+                "Tsuihou sareta Cheat Fuyo Majutsushi wa Kimama na Second Life wo Ouka suru",
+            ),
+            // Hyouken was claimed by Sekai Saikyou on {no, sekai}.
+            (
+                "Sekai Saikyou no Majo, Hajimemashita",
+                "Hyouken no Majutsushi ga Sekai wo Suberu II",
+            ),
+            (
+                "Hyouken no Majutsushi ga Sekai wo Suberu Season 2",
+                "Tsuihou sareta Cheat Fuyo Majutsushi wa Kimama na Second Life wo Ouka suru",
+            ),
+        ];
+
+        for (tracked, candidate) in cases {
+            assert!(
+                !matches_tracked(tracked, candidate),
+                "expected NO match: tracked={tracked:?} candidate={candidate:?}"
+            );
+        }
+    }
+
+    /// Regression for issue #29, other direction: the same snapshot's genuine
+    /// matches must survive the stricter rule.
+    #[test]
+    fn genuine_matches_from_the_same_snapshot_still_match() {
+        let cases = [
+            (
+                "Hyouken no Majutsushi ga Sekai wo Suberu Season 2",
+                "Hyouken no Majutsushi ga Sekai wo Suberu II",
+            ),
+            ("Koori no Jouheki Season 2", "Koori no Jouheki 2nd Season"),
+            ("FX Senshi Kurumi-chan", "FX Senshi Kurumi-chan"),
+            (
+                "Tantei wa Mou, Shindeiru. Season 2",
+                "Tantei wa Mou, Shindeiru. Season 2",
+            ),
+            (
+                "Sekai Saikyou no Majo, Hajimemashita",
+                "Sekai Saikyou no Majo, Hajimemashita",
+            ),
+            (
+                "Chitose-kun wa Ramune Bin no Naka Part 2",
+                "Chitose-kun wa Ramune Bin no Naka Part 2",
+            ),
+            (
+                "Tsuihou Sareta Cheat Fuyo Majutsushi wa Kimama na Second Life wo Ouka Suru",
+                "Tsuihou sareta Cheat Fuyo Majutsushi wa Kimama na Second Life wo Ouka suru. Ore wa Buki dake ja Naku, Arayuru Mono ni \"Kyouka Point\" wo Fuyo Dekiru",
+            ),
+            (
+                "Shiotaiou no Satou-san ga Ore ni dake Amai",
+                "Shiotaiou no Satou-san ga Ore ni dake Amai",
+            ),
+            (
+                "Yasei no Last Boss ga Arawareta! Season 2",
+                "Yasei no Last Boss ga Arawareta! 2nd Season",
+            ),
+            ("Tempal: Item no Chikara", "Tempal: Item no Chikara"),
+            ("Romelia Senki", "Romelia Senki"),
+            ("Kyouran Reijou Nia Liston", "Kyouran Reijou Nia Liston"),
+        ];
+
+        for (tracked, candidate) in cases {
+            assert!(
+                matches_tracked(tracked, candidate),
+                "expected a match: tracked={tracked:?} candidate={candidate:?}"
+            );
+        }
     }
 
     #[test]
