@@ -309,6 +309,6 @@ mod tests {
         assert_eq!(stamped.published_at, "2026-10-20T13:49:02+00:00");
         assert_eq!(unstamped.published_at, "");
         // An unstamped post must never sort above a stamped one.
-        assert_eq!(posts[0].title.starts_with("FX"), true);
+        assert!(posts[0].title.starts_with("FX"));
     }
 }

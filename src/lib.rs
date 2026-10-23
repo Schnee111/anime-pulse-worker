@@ -493,30 +493,72 @@ pub fn match_releases(
     tracked: &mut [TrackedAnime],
     candidates: Vec<ReleaseCandidate>,
 ) -> Vec<EpisodeRelease> {
-    let mut detected_releases = Vec::new();
-
-    for cand in candidates {
-        for item in tracked.iter_mut() {
+    // Collapse per tracked entry first, keeping the highest episode and the
+    // candidate that announced it. Dedupe used to rely on `last_episode`
+    // advancing on the first match, which only works while sources arrive in
+    // ascending order: one inconsistent source produced two cards for a single
+    // release (`Ao no Hako Season 2` Ep 3 and Ep 4 in one sweep).
+    let mut best: Vec<(usize, &ReleaseCandidate)> = Vec::new();
+    for cand in candidates.iter() {
+        for (idx, item) in tracked.iter().enumerate() {
             let title_matches = match cand.anime_id.as_deref() {
                 Some(id) => id == item.id,
                 None => matcher::matches_tracked(&item.title, &cand.title),
             };
-            if cand.episode > item.last_episode && title_matches {
-                item.last_episode = cand.episode;
-                detected_releases.push(EpisodeRelease {
-                    anime_id: item.id.clone(),
-                    title: item.title.clone(),
-                    episode: cand.episode,
-                    source: cand.source.into(),
-                    url: cand.url.clone(),
-                    thumbnail_url: item.thumbnail_url.clone(),
-                    image_url: item.image_url.clone(),
-                });
+            if !title_matches || cand.episode <= item.last_episode {
+                continue;
+            }
+            match best.iter_mut().find(|(slot, _)| *slot == idx) {
+                Some(slot) => {
+                    if cand.episode > slot.1.episode {
+                        slot.1 = cand;
+                    }
+                }
+                None => best.push((idx, cand)),
             }
         }
     }
 
+    let mut detected_releases = Vec::new();
+    for (idx, cand) in best {
+        let item = &mut tracked[idx];
+        // Not yet committed to KV: the caller only persists the episodes it
+        // actually delivered, so a failed webhook is retried on the next tick
+        // instead of being lost.
+        detected_releases.push(EpisodeRelease {
+            anime_id: item.id.clone(),
+            title: item.title.clone(),
+            episode: cand.episode,
+            source: cand.source.into(),
+            url: cand.url.clone(),
+            thumbnail_url: item.thumbnail_url.clone(),
+            image_url: item.image_url.clone(),
+        });
+    }
+
     detected_releases
+}
+
+/// Applies delivered releases to the watchlist and returns how many moved.
+///
+/// Delivery-then-commit: nothing is persisted until the webhook confirmed the
+/// card, because an advanced `last_episode` permanently hides the episode from
+/// every future tick.
+pub fn apply_delivered_episodes(
+    tracked: &mut [TrackedAnime],
+    delivered: &[EpisodeRelease],
+) -> usize {
+    let mut advanced = 0;
+    for rel in delivered {
+        if let Some(item) = tracked
+            .iter_mut()
+            .find(|item| item.id == rel.anime_id && rel.episode > item.last_episode)
+        {
+            item.last_episode = rel.episode;
+            advanced += 1;
+        }
+    }
+    advanced
 }
 
 #[event(scheduled)]
@@ -598,12 +640,16 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
             }
         };
 
-        // Only commit updated episode state to KV if Discord webhook succeeds
+        // Delivery-then-commit: only episodes that actually reached a channel
+        // advance `last_episode`. Committing before dispatch permanently loses
+        // any release whose webhook fails, because the state never goes back.
         match discord::send_discord_webhook(&webhook_url, &releases).await {
-            Ok(_) => {
-                if let Ok(json_str) = serde_json::to_string(&tracked) {
-                    if let Ok(put) = kv.put("tracked_anime", json_str) {
-                        let _ = put.execute().await;
+            Ok(delivered) => {
+                if apply_delivered_episodes(&mut tracked, &delivered) > 0 {
+                    if let Ok(json_str) = serde_json::to_string(&tracked) {
+                        if let Ok(put) = kv.put("tracked_anime", json_str) {
+                            let _ = put.execute().await;
+                        }
                     }
                 }
             }
@@ -779,11 +825,20 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     }
                 };
                 match discord::send_discord_webhook(&webhook_url, &releases).await {
-                    Ok(_) => {
-                        if let Ok(json_str) = serde_json::to_string(&tracked) {
-                            if let Ok(put) = kv.put("tracked_anime", json_str) {
-                                let _ = put.execute().await;
+                    Ok(delivered) => {
+                        if apply_delivered_episodes(&mut tracked, &delivered) > 0 {
+                            if let Ok(json_str) = serde_json::to_string(&tracked) {
+                                if let Ok(put) = kv.put("tracked_anime", json_str) {
+                                    let _ = put.execute().await;
+                                }
                             }
+                        }
+                        if delivered.len() < count {
+                            worker::console_log!(
+                                "{} of {} releases were delivered; the rest stay queued",
+                                delivered.len(),
+                                count
+                            );
                         }
                     }
                     Err(e) => {
@@ -869,9 +924,13 @@ mod match_tests {
         );
 
         assert_eq!(out.len(), 1);
-        assert_eq!(list[0].last_episode, 4);
         assert_eq!(out[0].episode, 4);
         assert_eq!(out[0].source, "Samehadaku API");
+        // Detection alone must not advance state: the caller commits only after
+        // the webhook confirms delivery (issue #31).
+        assert_eq!(list[0].last_episode, 3);
+        assert_eq!(apply_delivered_episodes(&mut list, &out), 1);
+        assert_eq!(list[0].last_episode, 4);
     }
 
     #[test]
@@ -892,6 +951,7 @@ mod match_tests {
         assert_eq!(out.len(), 1, "duplicate episode must not notify twice");
         // Samehadaku is supplied first, so its link wins.
         assert_eq!(out[0].source, "Samehadaku API");
+        apply_delivered_episodes(&mut list, &out);
         assert_eq!(list[0].last_episode, 3);
     }
 
@@ -933,6 +993,7 @@ mod match_tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].episode, 4);
         assert_eq!(out[0].source, "Otakudesu");
+        apply_delivered_episodes(&mut list, &out);
         assert_eq!(list[0].last_episode, 4);
     }
 
@@ -956,6 +1017,7 @@ mod match_tests {
         // Bound to "a" by id, so it must not touch "b" despite the matching title.
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].anime_id, "a");
+        apply_delivered_episodes(&mut list, &out);
         assert_eq!(list[0].last_episode, 5);
         assert_eq!(list[1].last_episode, 1);
     }
@@ -974,5 +1036,56 @@ mod match_tests {
 
         assert!(out.is_empty());
         assert_eq!(list[0].last_episode, 1);
+    }
+
+    /// Regression for issue #31. `Ao no Hako Season 2` received a card for Ep 3
+    /// **and** Ep 4 in one sweep because dedupe relied on `last_episode`
+    /// advancing on the first match, which only holds while candidates arrive in
+    /// ascending order.
+    #[test]
+    fn one_title_yields_one_release_even_when_sources_disagree_on_order() {
+        let mut list = vec![tracked("ao-no-hako-s2", "Ao no Hako Season 2", 2)];
+
+        // Newest first: no ascending order to lean on.
+        let out = match_releases(
+            &mut list,
+            vec![
+                candidate("Ao no Hako Season 2", 4, "Sokuja (Telegram)"),
+                candidate("Ao no Hako 2nd Season", 3, "Sokuja (Telegram)"),
+                candidate("Ao no Hako Season 2", 3, "Samehadaku API"),
+            ],
+        );
+
+        assert_eq!(out.len(), 1, "one release must produce exactly one card");
+        assert_eq!(out[0].episode, 4, "the highest episode must win");
+
+        apply_delivered_episodes(&mut list, &out);
+        assert_eq!(list[0].last_episode, 4);
+    }
+
+    /// Regression for issue #31, second half: a release that reaches no webhook
+    /// target must leave `last_episode` untouched so the next tick retries it.
+    #[test]
+    fn undelivered_release_does_not_advance_state() {
+        let mut list = vec![tracked("psyren", "Psyren", 2)];
+        let detected = match_releases(&mut list, vec![candidate("Psyren", 3, "Samehadaku API")]);
+        assert_eq!(detected.len(), 1);
+
+        // Discord reported zero delivered targets.
+        let delivered: Vec<EpisodeRelease> = Vec::new();
+        assert_eq!(apply_delivered_episodes(&mut list, &delivered), 0);
+        assert_eq!(
+            list[0].last_episode, 2,
+            "a failed delivery must stay queued for the next tick"
+        );
+
+        // Once a target accepts it, the state moves exactly once.
+        assert_eq!(apply_delivered_episodes(&mut list, &detected), 1);
+        assert_eq!(list[0].last_episode, 3);
+        assert_eq!(
+            apply_delivered_episodes(&mut list, &detected),
+            0,
+            "replaying the same delivery must be idempotent"
+        );
     }
 }
