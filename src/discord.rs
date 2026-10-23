@@ -56,10 +56,31 @@ pub fn build_single_release_payload(
     }
 }
 
-/// Dispatches each release as a separate Discord message so each has its own clean embed & dual visuals
+/// Redacts the secret token segment from a Discord webhook URL for safe logging.
+pub fn mask_webhook_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if let Some(idx) = trimmed.rfind('/') {
+        format!("{}/[REDACTED]", &trimmed[..idx])
+    } else {
+        "[REDACTED_WEBHOOK]".to_string()
+    }
+}
+
+/// Dispatches each release as a separate Discord message to all configured webhooks
+/// (supports comma-separated URLs for multi-channel / multi-guild broadcast).
 pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]) -> Result<()> {
     if releases.is_empty() {
         return Ok(());
+    }
+
+    let targets: Vec<&str> = webhook_url
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if targets.is_empty() {
+        return Err(worker::Error::RustError("No webhook URL provided".into()));
     }
 
     // `js_sys::Date` gives ISO-8601 without pulling in a calendar crate.
@@ -72,27 +93,62 @@ pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]
         let payload_json = serde_json::to_string(&payload)
             .map_err(|e| worker::Error::RustError(format!("JSON serialization error: {e}")))?;
 
-        let headers = Headers::new();
-        headers.set("Content-Type", "application/json")?;
-        headers.set("User-Agent", "AnimePulseWorker/1.0 (Cloudflare Rust)")?;
+        let mut rel_delivered = false;
 
-        let mut init = RequestInit::new();
-        init.with_method(Method::Post);
-        init.with_headers(headers);
-        init.with_body(Some(wasm_bindgen::JsValue::from_str(&payload_json)));
+        for (idx, target_url) in targets.iter().enumerate() {
+            let headers = Headers::new();
+            headers.set("Content-Type", "application/json")?;
+            headers.set("User-Agent", "AnimePulseWorker/1.0 (Cloudflare Rust)")?;
 
-        let request = Request::new_with_init(webhook_url, &init)?;
-        let response = Fetch::Request(request).send().await?;
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post);
+            init.with_headers(headers);
+            init.with_body(Some(wasm_bindgen::JsValue::from_str(&payload_json)));
 
-        if response.status_code() < 200 || response.status_code() >= 300 {
-            worker::console_error!(
-                "Discord webhook dispatch failed for {} with status: {}",
-                rel.title,
-                response.status_code()
-            );
+            let request = match Request::new_with_init(target_url, &init) {
+                Ok(req) => req,
+                Err(e) => {
+                    worker::console_error!(
+                        "Failed to create request for {} to webhook #{} ({}): {:?}",
+                        rel.title,
+                        idx + 1,
+                        mask_webhook_url(target_url),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            match Fetch::Request(request).send().await {
+                Ok(resp) => {
+                    if resp.status_code() >= 200 && resp.status_code() < 300 {
+                        rel_delivered = true;
+                    } else {
+                        worker::console_error!(
+                            "Discord webhook dispatch failed for {} to webhook #{} ({}) with status: {}",
+                            rel.title,
+                            idx + 1,
+                            mask_webhook_url(target_url),
+                            resp.status_code()
+                        );
+                    }
+                }
+                Err(e) => {
+                    worker::console_error!(
+                        "Discord webhook fetch error for {} to webhook #{} ({}): {:?}",
+                        rel.title,
+                        idx + 1,
+                        mask_webhook_url(target_url),
+                        e
+                    );
+                }
+            }
+        }
+
+        if !rel_delivered {
             return Err(worker::Error::RustError(format!(
-                "Discord webhook returned HTTP {}",
-                response.status_code()
+                "Failed to deliver release '{}' to any configured webhook",
+                rel.title
             )));
         }
     }
@@ -135,5 +191,14 @@ mod tests {
             embed.image.as_ref().unwrap().url,
             "https://img.youtube.com/vi/uvvYMBLY-w4/maxresdefault.jpg"
         );
+    }
+
+    #[test]
+    fn test_mask_webhook_url() {
+        assert_eq!(
+            mask_webhook_url("https://discord.com/api/webhooks/12345/abcdef_secret_token"),
+            "https://discord.com/api/webhooks/12345/[REDACTED]"
+        );
+        assert_eq!(mask_webhook_url("invalid_url"), "[REDACTED_WEBHOOK]");
     }
 }
