@@ -68,9 +68,16 @@ pub fn mask_webhook_url(url: &str) -> String {
 
 /// Dispatches each release as a separate Discord message to all configured webhooks
 /// (supports comma-separated URLs for multi-channel / multi-guild broadcast).
-pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]) -> Result<()> {
+///
+/// Returns the subset that reached **at least one** target. Callers persist state
+/// only for these: an advance on an undelivered release hides the episode from every
+/// later tick, because `last_episode` never moves backwards.
+pub async fn send_discord_webhook(
+    webhook_url: &str,
+    releases: &[EpisodeRelease],
+) -> Result<Vec<EpisodeRelease>> {
     if releases.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let targets: Vec<&str> = webhook_url
@@ -87,6 +94,8 @@ pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]
     let now = js_sys::Date::new_0();
     let now_utc = now.to_iso_string().as_string().unwrap_or_default();
     let now_unix = (now.get_time() / 1000.0) as u64;
+
+    let mut delivered: Vec<EpisodeRelease> = Vec::new();
 
     for rel in releases {
         let payload = build_single_release_payload(rel, &now_utc, now_unix);
@@ -146,14 +155,21 @@ pub async fn send_discord_webhook(webhook_url: &str, releases: &[EpisodeRelease]
         }
 
         if !rel_delivered {
-            return Err(worker::Error::RustError(format!(
-                "Failed to deliver release '{}' to any configured webhook",
-                rel.title
-            )));
+            // Isolated per release: one dead target must not cancel the others,
+            // and the caller retries this one on the next tick because its
+            // `last_episode` stays put.
+            worker::console_error!(
+                "Release '{}' Ep {} reached no webhook target, leaving state unadvanced",
+                rel.title,
+                rel.episode
+            );
+            continue;
         }
+
+        delivered.push(rel.clone());
     }
 
-    Ok(())
+    Ok(delivered)
 }
 
 #[cfg(test)]
