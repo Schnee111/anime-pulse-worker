@@ -672,18 +672,15 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
 
     merge_tracked_defaults(&mut tracked);
 
-    // Otakudesu needs the watchlist URLs, so it cannot overlap the KV read.
-    // It is throttled to one sweep per 15 minutes to keep 20 fetches off most
-    // ticks, and its candidates are appended last so Samehadaku and the Sokuja
-    // mirror still win any duplicate.
+    // The Otakudesu sweep is deliberately NOT run here. otakudesu.blog answers
+    // HTTP 403 to subrequests originating from a cron invocation while
+    // accepting the identical request from an HTTP invocation, so a sweep from
+    // this handler can only fail. Worse, it would consume the shared 15 minute
+    // throttle window and starve the externally triggered run that can succeed.
+    // The sweep lives in the `/trigger` route, driven by an external scheduler.
     let otakudesu_started = profile::now_ms();
-    let mut candidates = sources.candidates;
-    if throttle_due(&kv, OTAKUDESU_LAST_CHECK_KEY, OTAKUDESU_INTERVAL_MS).await {
-        mark_throttled(&kv, OTAKUDESU_LAST_CHECK_KEY).await;
-        candidates.extend(sweep_otakudesu(&tracked).await);
-    } else {
-        worker::console_log!("Otakudesu sweep skipped, next window not reached");
-    }
+    let candidates = sources.candidates;
+    worker::console_log!("Otakudesu sweep delegated to the external /trigger scheduler");
     profile.record(Stage::Otakudesu, otakudesu_started, profile::now_ms());
 
     let matching_started = profile::now_ms();
