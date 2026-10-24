@@ -681,6 +681,18 @@ pub fn apply_delivered_episodes(
     advanced
 }
 
+/// Writes the watchlist back to KV.
+///
+/// Extracted because reconciliation can change the watchlist on a path that
+/// delivers nothing, and that path still has to persist the change.
+async fn persist_tracked(kv: &KvStore, tracked: &[TrackedAnime]) {
+    if let Ok(json_str) = serde_json::to_string(tracked) {
+        if let Ok(put) = kv.put("tracked_anime", json_str) {
+            let _ = put.execute().await;
+        }
+    }
+}
+
 /// Advances `tracked` to episodes the ledger says were already delivered.
 ///
 /// A tick works from a snapshot that can be a minute stale. When the ledger
@@ -703,6 +715,44 @@ fn reconcile_already_delivered(tracked: &mut [TrackedAnime], keys: &[String]) ->
     advanced
 }
 
+/// What one delivery attempt achieved, counted by reason.
+///
+/// `already_announced` is separated from `undelivered` because the two need
+/// opposite handling: a refused episode is finished with, while an undelivered
+/// one stays queued for the next tick. Reporting them as one number produced the
+/// log line "0 of 1 releases were delivered; the rest stay queued" for an episode
+/// that was not queued at all but already announced.
+struct DeliveryOutcome {
+    matched: usize,
+    delivered: usize,
+    already_announced: usize,
+}
+
+impl DeliveryOutcome {
+    /// Episodes that matched but reached no channel and were not refused, i.e.
+    /// the ones that genuinely stay queued for the next tick.
+    fn queued(&self) -> usize {
+        self.matched
+            .saturating_sub(self.delivered)
+            .saturating_sub(self.already_announced)
+    }
+
+    /// Logs why a batch was incomplete, without conflating the two reasons.
+    fn log_incomplete(&self) {
+        if self.delivered >= self.matched {
+            return;
+        }
+        let queued = self.queued();
+        if queued > 0 {
+            worker::console_log!(
+                "{} of {} release(s) reached no channel; they stay queued",
+                queued,
+                self.matched
+            );
+        }
+    }
+}
+
 /// Announces only the releases no other invocation has already claimed.
 ///
 /// The watchlist snapshot a tick works from can be up to a minute stale, so the
@@ -723,13 +773,13 @@ async fn deliver_unclaimed_releases(
     tracked: &mut [TrackedAnime],
     releases: &[EpisodeRelease],
     webhook_url: &str,
-) -> Result<usize> {
+) -> Result<DeliveryOutcome> {
     let wanted: Vec<String> = releases
         .iter()
         .map(|rel| ledger::key(&rel.anime_id, rel.episode))
         .collect();
 
-    let (to_send, managed_by_ledger) = match ledger::claim(env, &wanted).await {
+    let (to_send, managed_by_ledger, already_announced) = match ledger::claim(env, &wanted).await {
         Ok(claim) => {
             // An episode refused as already-final was delivered by another
             // invocation, which means this snapshot is behind for that title.
@@ -745,7 +795,18 @@ async fn deliver_unclaimed_releases(
                     "All {} matched releases were already announced by another invocation",
                     releases.len()
                 );
-                return Ok(0);
+                // The reconciliation above has to be persisted even though nothing
+                // is delivered. Verified in production: after a refused run the KV
+                // watchlist stayed at the older episode indefinitely, because this
+                // path returned without writing and nothing else corrects it.
+                if reconciled > 0 {
+                    persist_tracked(kv, tracked).await;
+                }
+                return Ok(DeliveryOutcome {
+                    matched: releases.len(),
+                    delivered: 0,
+                    already_announced: claim.already_final.len(),
+                });
             }
             let allowed: std::collections::HashSet<&String> = claim.granted.iter().collect();
             (
@@ -755,6 +816,7 @@ async fn deliver_unclaimed_releases(
                     .cloned()
                     .collect::<Vec<_>>(),
                 true,
+                claim.already_final.len(),
             )
         }
         Err(e) => {
@@ -762,7 +824,7 @@ async fn deliver_unclaimed_releases(
                 "Delivery ledger unavailable ({:?}); falling back to delivery without dedupe",
                 e
             );
-            (releases.to_vec(), false)
+            (releases.to_vec(), false, 0)
         }
     };
 
@@ -809,13 +871,13 @@ async fn deliver_unclaimed_releases(
     // Written unconditionally once a delivery happened: the snapshot may have been
     // reconciled forward above, and skipping that write is what let a stale copy
     // roll a committed episode back.
-    if let Ok(json_str) = serde_json::to_string(tracked) {
-        if let Ok(put) = kv.put("tracked_anime", json_str) {
-            let _ = put.execute().await;
-        }
-    }
+    persist_tracked(kv, tracked).await;
 
-    Ok(delivered.len())
+    Ok(DeliveryOutcome {
+        matched: releases.len(),
+        delivered: delivered.len(),
+        already_announced,
+    })
 }
 
 #[event(scheduled)]
@@ -897,14 +959,7 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
         // Claim -> send -> commit, so an episode another invocation already
         // announced is not announced again from this tick's stale snapshot.
         match deliver_unclaimed_releases(&env, &kv, &mut tracked, &releases, &webhook_url).await {
-            Ok(delivered) if delivered < releases.len() => {
-                worker::console_log!(
-                    "{} of {} releases were delivered; the rest stay queued",
-                    delivered,
-                    releases.len()
-                );
-            }
-            Ok(_) => {}
+            Ok(outcome) => outcome.log_incomplete(),
             Err(e) => {
                 worker::console_error!("Failed to send Discord webhook: {:?}", e);
             }
@@ -1140,15 +1195,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 )
                 .await
                 {
-                    Ok(delivered) => {
-                        if delivered < count {
-                            worker::console_log!(
-                                "{} of {} releases were delivered; the rest stay queued",
-                                delivered,
-                                count
-                            );
-                        }
-                    }
+                    Ok(outcome) => outcome.log_incomplete(),
                     Err(e) => {
                         worker::console_error!("Failed to send webhook: {:?}", e);
                         return Response::error("Failed to deliver notification", 502);
@@ -1431,6 +1478,41 @@ mod match_tests {
             "the committed episode survives the write instead of rolling back to 3"
         );
         assert_eq!(list[1].last_episode, 3);
+    }
+
+    #[test]
+    fn refused_episodes_are_not_reported_as_queued() {
+        // The production log said "0 of 1 releases were delivered; the rest stay
+        // queued" for an episode that had already been announced, which is the
+        // opposite of queued. Refusals must not be counted as pending work.
+        let refused = DeliveryOutcome {
+            matched: 1,
+            delivered: 0,
+            already_announced: 1,
+        };
+        assert_eq!(
+            refused.queued(),
+            0,
+            "already announced is finished, not queued"
+        );
+
+        let webhook_failed = DeliveryOutcome {
+            matched: 3,
+            delivered: 1,
+            already_announced: 1,
+        };
+        assert_eq!(
+            webhook_failed.queued(),
+            1,
+            "only the unsent episode stays queued"
+        );
+
+        let complete = DeliveryOutcome {
+            matched: 2,
+            delivered: 2,
+            already_announced: 0,
+        };
+        assert_eq!(complete.queued(), 0);
     }
 
     #[test]
