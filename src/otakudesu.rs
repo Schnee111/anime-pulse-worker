@@ -44,6 +44,30 @@ static EPISODE_HREF_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"href="(https?://otakudesu\.[a-z]+/episode/[^"]*?-episode-(\d+)[^"]*)""#).unwrap()
 });
 
+/// Compression container magic numbers.
+///
+/// A response body that still begins with one of these was never decoded by the
+/// runtime, so it cannot be parsed as HTML. Naming the encoding turns a silent
+/// "no episode links" into an actionable failure.
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+
+/// Names the compression container `body` is still wrapped in, if any.
+///
+/// `otakudesu.blog` negotiates zstd, and Workers does not decode zstd response
+/// bodies (`cloudflare/workerd#6836` is still open). Without this check the
+/// parser sees binary garbage, matches no episode links, and reports the
+/// misleading "page exposed no episode links" for every series in the sweep.
+pub fn detect_undecoded_compression(body: &[u8]) -> Option<&'static str> {
+    if body.starts_with(&ZSTD_MAGIC) {
+        return Some("zstd");
+    }
+    if body.starts_with(&GZIP_MAGIC) {
+        return Some("gzip");
+    }
+    None
+}
+
 /// Returns the highest episode published on a series page.
 ///
 /// `None` when the page lists no episode links at all, which is also what a
@@ -82,8 +106,13 @@ pub async fn fetch_series(series_url: &str) -> Result<OtakudesuRelease> {
     let headers = Headers::new();
     headers.set("User-Agent", BROWSER_UA)?;
     headers.set("Accept", "text/html,application/xhtml+xml")?;
-    // Never set Accept-Encoding: Workers only transparently decompress
-    // subrequest responses when the header is left unset.
+    // Ask for identity. Measurement says the current outage is not compression:
+    // a Worker received a decoded 31078-byte body for unset, gzip, identity, and
+    // "br, gzip, zstd" alike, and the production failure logs `HTTP 403`, not an
+    // undecoded body. identity is still pinned because it removes the whole
+    // zstd class of failure at the source - if a future runtime stops decoding a
+    // container this origin starts serving, there is nothing left to decode.
+    headers.set("Accept-Encoding", "identity")?;
     init.with_headers(headers);
 
     let request = Request::new_with_init(series_url, &init)?;
@@ -96,9 +125,23 @@ pub async fn fetch_series(series_url: &str) -> Result<OtakudesuRelease> {
         )));
     }
 
-    let html = response.text().await?;
+    // Read bytes rather than text so an undecoded body can be named instead of
+    // being lossily decoded into unparseable characters.
+    let body = response.bytes().await?;
+    if let Some(encoding) = detect_undecoded_compression(&body) {
+        return Err(Error::RustError(format!(
+            "otakudesu body still {} compressed ({} bytes): the runtime did not decode content-encoding",
+            encoding,
+            body.len()
+        )));
+    }
+
+    let html = String::from_utf8_lossy(&body);
     parse_latest_episode(&html).ok_or_else(|| {
-        Error::RustError("otakudesu series page exposed no episode links".to_string())
+        Error::RustError(format!(
+            "otakudesu series page exposed no episode links ({} byte body)",
+            body.len()
+        ))
     })
 }
 
@@ -154,5 +197,34 @@ mod tests {
     fn ignores_links_from_other_hosts() {
         let html = r#"<a href="https://example.test/episode/z-episode-77-sub-indo/">x</a>"#;
         assert!(parse_latest_episode(html).is_none());
+    }
+
+    /// Regression for issue #35: a body that still carries the zstd frame magic
+    /// must be reported as undecoded compression, because passing it to the
+    /// episode parser yields the misleading "no episode links" for every series.
+    #[test]
+    fn names_undecoded_zstd() {
+        // Real zstd frame header from an otakudesu response: magic + frame header.
+        let body = [0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x08, 0x01, 0x00];
+        assert_eq!(detect_undecoded_compression(&body), Some("zstd"));
+    }
+
+    /// Regression for issue #35: gzip is named too, so a runtime that fails to
+    /// decode it cannot masquerade as an empty series page.
+    #[test]
+    fn names_undecoded_gzip() {
+        let body = [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(detect_undecoded_compression(&body), Some("gzip"));
+    }
+
+    /// Plain HTML must never be mistaken for a compressed body, otherwise the
+    /// fix would reject the responses it is supposed to accept.
+    #[test]
+    fn plain_html_is_not_flagged_as_compressed() {
+        let html = SERIES_PAGE.as_bytes();
+        assert_eq!(detect_undecoded_compression(html), None);
+        // Short bodies must not panic on the slice comparison.
+        assert_eq!(detect_undecoded_compression(b""), None);
+        assert_eq!(detect_undecoded_compression(b"<h"), None);
     }
 }

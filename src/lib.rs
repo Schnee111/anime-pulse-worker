@@ -301,6 +301,9 @@ const TELEGRAM_LAST_CHECK_KEY: &str = "telegram_last_check";
 /// KV key holding the epoch-millis stamp of the last Otakudesu sweep.
 const OTAKUDESU_LAST_CHECK_KEY: &str = "otakudesu_last_check";
 
+/// How many distinct failure reasons one sweep writes to the log.
+const MAX_LOGGED_FAILURES: usize = 4;
+
 /// Minimum gap between Otakudesu series sweeps.
 ///
 /// A sweep is one request per tracked title (20 today, capped at 5 in flight),
@@ -440,6 +443,40 @@ pub async fn collect_sources(kv: &KvStore) -> Sources {
     }
 }
 
+/// Normalises a failure message so one underlying cause occupies one log slot.
+///
+/// Series pages differ in size, so a raw message like "no episode links (31078
+/// byte body)" would differ per title and burn every slot on the same cause.
+/// Byte counts are masked; status codes are deliberately preserved, because
+/// HTTP 403 and HTTP 500 are different problems.
+fn group_failure_reason(reason: &str) -> String {
+    let chars: Vec<char> = reason.chars().collect();
+    let mut out = String::with_capacity(reason.len());
+    let mut i = 0;
+
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        let tail: String = chars[i..].iter().take(5).collect();
+        // Only size figures are noise; a status code must survive grouping.
+        if tail.starts_with(" byte") {
+            out.push('#');
+        } else {
+            out.extend(&chars[start..i]);
+        }
+    }
+
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Sweeps every tracked series page on Otakudesu.
 ///
 /// Concurrency is capped at 5: Workers Free allows only 6 simultaneous outgoing
@@ -470,6 +507,7 @@ async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> Vec<ReleaseCandidate> {
     let mut candidates = Vec::new();
     let mut fetched = 0usize;
     let mut failed = 0usize;
+    let mut reasons: Vec<String> = Vec::new();
 
     for (id, title, outcome) in results {
         match outcome {
@@ -483,7 +521,17 @@ async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> Vec<ReleaseCandidate> {
                     anime_id: Some(id),
                 });
             }
-            Err(_) => failed += 1,
+            Err(e) => {
+                failed += 1;
+                // Keep the reason, grouped and capped: a total outage used to log
+                // only a count, which made a dead source look healthy. Byte
+                // counts are stripped before grouping, otherwise per-series body
+                // sizes vary and fill every slot with the same underlying cause.
+                let reason = group_failure_reason(&e.to_string());
+                if reasons.len() < MAX_LOGGED_FAILURES && !reasons.contains(&reason) {
+                    reasons.push(reason);
+                }
+            }
         }
     }
 
@@ -492,6 +540,9 @@ async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> Vec<ReleaseCandidate> {
         fetched,
         failed
     );
+    if !reasons.is_empty() {
+        worker::console_log!("Otakudesu failure reasons: {}", reasons.join(" | "));
+    }
     candidates
 }
 
@@ -1181,5 +1232,43 @@ mod match_tests {
             out.is_empty(),
             "the baseline episode must not be re-announced"
         );
+    }
+
+    /// Review follow-up on #35: per-series body sizes must not fill every log
+    /// slot with what is really one underlying cause.
+    #[test]
+    fn failure_reasons_group_by_cause_not_by_size() {
+        let a = "otakudesu series page exposed no episode links (31078 byte body)";
+        let b = "otakudesu series page exposed no episode links (31102 byte body)";
+        assert_eq!(group_failure_reason(a), group_failure_reason(b));
+        assert_eq!(
+            group_failure_reason(a),
+            "otakudesu series page exposed no episode links (# byte body)"
+        );
+    }
+
+    /// A status code is a distinct cause and must survive grouping; only size
+    /// figures are noise.
+    #[test]
+    fn failure_reasons_keep_http_status_codes_distinct() {
+        assert_ne!(
+            group_failure_reason("otakudesu series returned HTTP 403"),
+            group_failure_reason("otakudesu series returned HTTP 500")
+        );
+        assert_eq!(
+            group_failure_reason("otakudesu series returned HTTP 403"),
+            "otakudesu series returned HTTP 403"
+        );
+    }
+
+    /// Undecoded-compression messages carry both an encoding name and a size;
+    /// different encodings must not collapse into one slot.
+    #[test]
+    fn failure_reasons_keep_compression_kind_distinct() {
+        let zstd = "otakudesu body still zstd compressed (9601 bytes): runtime did not decode";
+        let gzip = "otakudesu body still gzip compressed (9136 bytes): runtime did not decode";
+        assert_ne!(group_failure_reason(zstd), group_failure_reason(gzip));
+        assert!(group_failure_reason(zstd).contains("zstd"));
+        assert!(group_failure_reason(gzip).contains("gzip"));
     }
 }
