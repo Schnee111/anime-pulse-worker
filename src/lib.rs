@@ -180,6 +180,17 @@ pub fn default_tracked_list() -> Vec<TrackedAnime> {
             thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx212503-sXBpRZr96c4e.jpg".into()),
             image_url: Some("https://img.youtube.com/vi/oxkxyAcKv2g/maxresdefault.jpg".into()),
         },
+        // Added late: AniList 205909, 12 episodes, already at Ep 3 on Otakudesu
+        // when it joined the list, so tracking starts at Ep 4 instead of
+        // replaying the backlog.
+        TrackedAnime {
+            id: "hotaru-no-yomeiri".into(),
+            title: "Hotaru no Yomeiri".into(),
+            last_episode: 3,
+            url: "https://otakudesu.blog/anime/hotaru-yomeiri-sub-indo/".into(),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx205909-DM0fAzNQulod.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/Ex9LrBK-7hk/maxresdefault.jpg".into()),
+        },
     ]
 }
 
@@ -1086,6 +1097,82 @@ mod match_tests {
             apply_delivered_episodes(&mut list, &detected),
             0,
             "replaying the same delivery must be idempotent"
+        );
+    }
+
+    /// Regression for issue #33: a title added to the code defaults must appear
+    /// even when KV is missing it, and must land at the episode that was out
+    /// when it joined, not at zero.
+    #[test]
+    fn default_list_carries_hotaru_no_yomeiri_at_episode_three() {
+        let defaults = default_tracked_list();
+        let entry = defaults
+            .iter()
+            .find(|t| t.id == "hotaru-no-yomeiri")
+            .expect("Hotaru no Yomeiri must be in the default watchlist");
+        assert_eq!(entry.title, "Hotaru no Yomeiri");
+        assert_eq!(
+            entry.last_episode, 3,
+            "tracking starts at Ep 4, so the three episodes already out must not replay"
+        );
+        assert!(entry.url.contains("hotaru-yomeiri-sub-indo"));
+        assert!(entry.thumbnail_url.is_some());
+        assert!(entry.image_url.is_some());
+    }
+
+    /// Regression for issue #33: a KV record written before the title existed
+    /// must gain it on the next tick, because `merge_tracked_defaults` runs
+    /// every tick rather than only when KV is empty.
+    #[test]
+    fn merge_adds_missing_default_without_disturbing_existing_state() {
+        let mut list = vec![tracked("psyren", "Psyren", 7)];
+        merge_tracked_defaults(&mut list);
+
+        assert_eq!(
+            list[0].last_episode, 7,
+            "merging defaults must never reset a live counter"
+        );
+        let hotaru = list
+            .iter()
+            .find(|t| t.id == "hotaru-no-yomeiri")
+            .expect("merge must append the missing default");
+        assert_eq!(hotaru.last_episode, 3);
+
+        // Idempotent: a second merge must not duplicate the entry.
+        let before = list.len();
+        merge_tracked_defaults(&mut list);
+        assert_eq!(list.len(), before, "merge must be idempotent");
+    }
+
+    /// Regression for issue #33: the live Sokuja/Samehadaku post title must
+    /// resolve to the new entry, otherwise the watchlist addition is inert.
+    #[test]
+    fn hotaru_no_yomeiri_release_title_matches_its_entry() {
+        let list = vec![tracked("hotaru-no-yomeiri", "Hotaru no Yomeiri", 3)];
+        let out = match_releases(
+            &list,
+            vec![candidate(
+                "Hotaru no Yomeiri Episode 4 Subtitle Indonesia",
+                4,
+                "Sokuja (Telegram)",
+            )],
+        );
+        assert_eq!(out.len(), 1, "episode 4 must be detected");
+        assert_eq!(out[0].anime_id, "hotaru-no-yomeiri");
+        assert_eq!(out[0].episode, 4);
+
+        // Episode 3 is already the baseline, so it must stay quiet.
+        let out = match_releases(
+            &list,
+            vec![candidate(
+                "Hotaru no Yomeiri Episode 3 Subtitle Indonesia",
+                3,
+                "Sokuja (Telegram)",
+            )],
+        );
+        assert!(
+            out.is_empty(),
+            "the baseline episode must not be re-announced"
         );
     }
 }
