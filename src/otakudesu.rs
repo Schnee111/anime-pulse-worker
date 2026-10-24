@@ -106,9 +106,13 @@ pub async fn fetch_series(series_url: &str) -> Result<OtakudesuRelease> {
     let headers = Headers::new();
     headers.set("User-Agent", BROWSER_UA)?;
     headers.set("Accept", "text/html,application/xhtml+xml")?;
-    // Leave Accept-Encoding unset: the origin returns a decoded body for every
-    // value measured from a Worker, so the body is verified by magic number
-    // below instead of by header guessing.
+    // Ask for identity. Measurement says the current outage is not compression:
+    // a Worker received a decoded 31078-byte body for unset, gzip, identity, and
+    // "br, gzip, zstd" alike, and the production failure logs `HTTP 403`, not an
+    // undecoded body. identity is still pinned because it removes the whole
+    // zstd class of failure at the source - if a future runtime stops decoding a
+    // container this origin starts serving, there is nothing left to decode.
+    headers.set("Accept-Encoding", "identity")?;
     init.with_headers(headers);
 
     let request = Request::new_with_init(series_url, &init)?;
