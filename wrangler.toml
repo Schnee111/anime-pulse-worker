@@ -13,5 +13,17 @@ preview_id = "ab52264ad70f4f82b2e460d0e757874c"
 [triggers]
 crons = ["* * * * *"]
 
+# Strongly consistent dedupe for announced episodes. KV cannot serve this role:
+# its reads can lag a write by up to a minute, which is the exact window that
+# produces duplicate cards (issue #43). One instance named "global" serializes
+# every claim through the same storage.
+[[durable_objects.bindings]]
+name = "DELIVERY_LEDGER"
+class_name = "DeliveryLedger"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DeliveryLedger"]
+
 [vars]
 ENVIRONMENT = "production"
