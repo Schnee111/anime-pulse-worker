@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod discord;
 pub mod matcher;
 pub mod models;
@@ -684,7 +685,10 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 r#"{"status":"healthy","service":"anime-pulse-worker","runtime":"rust-wasm"}"#,
             )
         })
-        .post_async("/test-webhook", |_, ctx| async move {
+        .post_async("/test-webhook", |req, ctx| async move {
+            if let Err(denied) = auth::require(&req, &ctx.env) {
+                return Ok(denied);
+            }
             let secret_res = ctx.env.secret("DISCORD_WEBHOOK_URL");
             match secret_res {
                 Ok(sec) => {
@@ -778,7 +782,10 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 }
             }
         })
-        .post_async("/trigger", |_, ctx| async move {
+        .post_async("/trigger", |req, ctx| async move {
+            if let Err(denied) = auth::require(&req, &ctx.env) {
+                return Ok(denied);
+            }
             let tick_started = profile::now_ms();
             let mut profile = TickProfile::default();
 
