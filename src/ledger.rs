@@ -67,6 +67,22 @@ pub struct Entry {
     pub at_ms: i64,
 }
 
+/// Outcome of a claim attempt, split by why an episode was refused.
+///
+/// `already_final` must be visible to the caller: an episode refused because it
+/// was already delivered is proof that the caller's watchlist snapshot is stale
+/// for that title, and the caller has to reconcile it before writing the
+/// watchlist back. Without that, a tick that delivers a different title would
+/// write the stale value over KV and roll back progress another invocation had
+/// already committed (review finding on #44).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Claim {
+    /// Episodes this caller now owns and may announce.
+    pub granted: Vec<String>,
+    /// Episodes already confirmed delivered. Never announce them again.
+    pub already_final: Vec<String>,
+}
+
 /// The stored decision state. Pure data with no runtime dependency, so the
 /// semantics can be tested without a Durable Object.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -75,22 +91,29 @@ pub struct Ledger {
 }
 
 impl Ledger {
-    /// Returns the subset of `keys` this caller now owns.
+    /// Returns which of `keys` this caller now owns.
     ///
     /// A key is claimable when it is unknown, or when its pending claim has aged
-    /// past `PENDING_TTL_MS`. Finals are never claimable again.
-    pub fn claim(&mut self, keys: &[String], now_ms: i64) -> Vec<String> {
-        let mut granted = Vec::new();
+    /// past `PENDING_TTL_MS`. Finals are never claimable again, and are reported
+    /// separately so the caller can reconcile a stale snapshot.
+    pub fn claim(&mut self, keys: &[String], now_ms: i64) -> Claim {
+        let mut claim = Claim::default();
         for key in keys {
-            let claimable = match self.entries.get(key) {
-                None => true,
+            match self.entries.get(key) {
+                None => {}
                 Some(entry) => match entry.state {
-                    EntryState::Final => false,
-                    EntryState::Pending => now_ms.saturating_sub(entry.at_ms) >= PENDING_TTL_MS,
+                    EntryState::Final => {
+                        claim.already_final.push(key.clone());
+                        continue;
+                    }
+                    EntryState::Pending => {
+                        if now_ms.saturating_sub(entry.at_ms) < PENDING_TTL_MS {
+                            // Another invocation is mid-flight. Not claimable, and
+                            // not evidence of a stale snapshot either.
+                            continue;
+                        }
+                    }
                 },
-            };
-            if !claimable {
-                continue;
             }
             self.entries.insert(
                 key.clone(),
@@ -99,9 +122,9 @@ impl Ledger {
                     at_ms: now_ms,
                 },
             );
-            granted.push(key.clone());
+            claim.granted.push(key.clone());
         }
-        granted
+        claim
     }
 
     /// Marks claimed keys as delivered. Called only after the webhook confirmed.
@@ -117,10 +140,18 @@ impl Ledger {
         }
     }
 
-    /// Drops claims so the next tick can retry them.
+    /// Drops pending claims so the next tick can retry them.
+    ///
+    /// Refuses to remove a `Final`: that entry is the record that the episode was
+    /// delivered, and deleting it would let a future tick announce the episode
+    /// again. Only the caller's own pending claim may be released.
     pub fn release(&mut self, keys: &[String]) {
         for key in keys {
-            self.entries.remove(key);
+            if let Some(entry) = self.entries.get(key) {
+                if entry.state == EntryState::Pending {
+                    self.entries.remove(key);
+                }
+            }
         }
     }
 
@@ -157,21 +188,27 @@ impl DurableObject for DeliveryLedger {
 
         let out = match action.as_str() {
             "claim" => {
-                let granted = ledger.claim(&keys, now_ms);
+                let claim = ledger.claim(&keys, now_ms);
                 ledger.prune(now_ms);
                 storage.put("ledger", &ledger).await?;
-                granted
+                claim
             }
             "commit" => {
                 ledger.commit(&keys, now_ms);
                 ledger.prune(now_ms);
                 storage.put("ledger", &ledger).await?;
-                keys
+                Claim {
+                    granted: keys,
+                    already_final: Vec::new(),
+                }
             }
             "release" => {
                 ledger.release(&keys);
                 storage.put("ledger", &ledger).await?;
-                keys
+                Claim {
+                    granted: keys,
+                    already_final: Vec::new(),
+                }
             }
             other => {
                 return Response::error(format!("unknown ledger action: {other}"), 404);
@@ -184,7 +221,7 @@ impl DurableObject for DeliveryLedger {
 
 const BINDING: &str = "DELIVERY_LEDGER";
 
-async fn call(env: &Env, action: &str, keys: &[String]) -> Result<Vec<String>> {
+async fn call(env: &Env, action: &str, keys: &[String]) -> Result<Claim> {
     let namespace = env.durable_object(BINDING)?;
     let stub = namespace.id_from_name("global")?.get_stub()?;
     let body = serde_json::to_string(keys)?;
@@ -196,22 +233,32 @@ async fn call(env: &Env, action: &str, keys: &[String]) -> Result<Vec<String>> {
     if resp.status_code() != 200 {
         return Err(format!("ledger {action} failed with {}", resp.status_code()).into());
     }
-    resp.json::<Vec<String>>().await
+    resp.json::<Claim>().await
 }
 
-/// Claims the given episodes, returning the subset this invocation may announce.
-pub async fn claim(env: &Env, keys: &[String]) -> Result<Vec<String>> {
+/// Claims the given episodes, reporting which are granted and which were already
+/// delivered by somebody else.
+pub async fn claim(env: &Env, keys: &[String]) -> Result<Claim> {
     call(env, "claim", keys).await
 }
 
 /// Records confirmed delivery.
-pub async fn commit(env: &Env, keys: &[String]) -> Result<Vec<String>> {
+pub async fn commit(env: &Env, keys: &[String]) -> Result<Claim> {
     call(env, "commit", keys).await
 }
 
-/// Drops claims whose delivery failed, so the next tick retries them.
-pub async fn release(env: &Env, keys: &[String]) -> Result<Vec<String>> {
+/// Drops pending claims whose delivery failed, so the next tick retries them.
+pub async fn release(env: &Env, keys: &[String]) -> Result<Claim> {
     call(env, "release", keys).await
+}
+
+/// Splits `anime_id:episode` back into its parts.
+///
+/// Anime ids are slugs and never contain a colon, so the last separator is the
+/// episode. Kept next to `key` so the format lives in one place.
+pub fn parse_key(key: &str) -> Option<(String, u32)> {
+    let (anime_id, episode) = key.rsplit_once(':')?;
+    Some((anime_id.to_string(), episode.parse().ok()?))
 }
 
 #[cfg(test)]
@@ -227,9 +274,13 @@ mod tests {
         let mut ledger = Ledger::default();
         let k = keys(&[("psyren", 3)]);
 
-        assert_eq!(ledger.claim(&k, 1_000), k, "first caller owns the episode");
+        assert_eq!(
+            ledger.claim(&k, 1_000).granted,
+            k,
+            "first caller owns the episode"
+        );
         assert!(
-            ledger.claim(&k, 1_500).is_empty(),
+            ledger.claim(&k, 1_500).granted.is_empty(),
             "a second invocation minutes later must not announce it again"
         );
     }
@@ -242,20 +293,68 @@ mod tests {
         ledger.commit(&k, 1_200);
 
         // Long past the pending TTL, still refused: this is the delivery record.
-        assert!(ledger.claim(&k, 1_000 + PENDING_TTL_MS * 10).is_empty());
+        assert!(ledger
+            .claim(&k, 1_000 + PENDING_TTL_MS * 10)
+            .granted
+            .is_empty());
+    }
+
+    #[test]
+    fn a_refused_final_episode_is_reported_so_the_caller_can_reconcile() {
+        let mut ledger = Ledger::default();
+        let k = keys(&[("psyren", 3)]);
+        ledger.claim(&k, 1_000);
+        ledger.commit(&k, 1_200);
+
+        let claim = ledger.claim(&k, 5_000);
+        assert!(claim.granted.is_empty());
+        assert_eq!(
+            claim.already_final, k,
+            "the caller must be told this episode is already delivered, otherwise it \
+             writes its stale snapshot back over the newer watchlist"
+        );
+    }
+
+    #[test]
+    fn a_mid_flight_claim_is_not_reported_as_already_delivered() {
+        let mut ledger = Ledger::default();
+        let k = keys(&[("psyren", 3)]);
+        ledger.claim(&k, 1_000);
+
+        let claim = ledger.claim(&k, 1_500);
+        assert!(claim.granted.is_empty());
+        assert!(
+            claim.already_final.is_empty(),
+            "a pending claim is not proof of delivery and must not advance the watchlist"
+        );
     }
 
     #[test]
     fn a_failed_delivery_is_released_for_the_next_tick() {
         let mut ledger = Ledger::default();
         let k = keys(&[("psyren", 3)]);
-        assert_eq!(ledger.claim(&k, 1_000), k);
+        assert_eq!(ledger.claim(&k, 1_000).granted, k);
 
         ledger.release(&k);
         assert_eq!(
-            ledger.claim(&k, 2_000),
+            ledger.claim(&k, 2_000).granted,
             k,
             "a webhook failure must stay queued, not be suppressed"
+        );
+    }
+
+    #[test]
+    fn releasing_a_delivered_episode_does_not_erase_the_delivery_record() {
+        let mut ledger = Ledger::default();
+        let k = keys(&[("psyren", 3)]);
+        ledger.claim(&k, 1_000);
+        ledger.commit(&k, 1_200);
+
+        // A caller misusing release must not be able to reopen an announced episode.
+        ledger.release(&k);
+        assert!(
+            ledger.claim(&k, 5_000).granted.is_empty(),
+            "release must only drop pending claims, never a final one"
         );
     }
 
@@ -263,12 +362,15 @@ mod tests {
     fn an_abandoned_claim_self_heals_after_the_ttl() {
         let mut ledger = Ledger::default();
         let k = keys(&[("psyren", 3)]);
-        assert_eq!(ledger.claim(&k, 1_000), k);
+        assert_eq!(ledger.claim(&k, 1_000).granted, k);
 
         // The worker died between claim and send. No commit, no release.
-        assert!(ledger.claim(&k, 1_000 + PENDING_TTL_MS - 1).is_empty());
+        assert!(ledger
+            .claim(&k, 1_000 + PENDING_TTL_MS - 1)
+            .granted
+            .is_empty());
         assert_eq!(
-            ledger.claim(&k, 1_000 + PENDING_TTL_MS),
+            ledger.claim(&k, 1_000 + PENDING_TTL_MS).granted,
             k,
             "an abandoned claim must expire or the episode is lost forever"
         );
@@ -306,7 +408,7 @@ mod tests {
         ledger.commit(&ep3, 1_000);
 
         assert_eq!(
-            ledger.claim(&ep4, 2_000),
+            ledger.claim(&ep4, 2_000).granted,
             ep4,
             "committing one episode must not block the next one"
         );
@@ -320,10 +422,21 @@ mod tests {
         ledger.commit(&first, 1_000);
 
         let batch = keys(&[("psyren", 3), ("psyren", 4)]);
+        let claim = ledger.claim(&batch, 2_000);
         assert_eq!(
-            ledger.claim(&batch, 2_000),
+            claim.granted,
             keys(&[("psyren", 4)]),
             "already delivered episodes are filtered out of the batch"
         );
+        assert_eq!(claim.already_final, keys(&[("psyren", 3)]));
+    }
+
+    #[test]
+    fn a_key_round_trips_back_to_its_parts() {
+        assert_eq!(
+            parse_key(&key("hotaru-no-yomeiri", 12)),
+            Some(("hotaru-no-yomeiri".to_string(), 12))
+        );
+        assert_eq!(parse_key("no-episode-here"), None);
     }
 }

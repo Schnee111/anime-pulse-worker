@@ -646,6 +646,28 @@ pub fn apply_delivered_episodes(
     advanced
 }
 
+/// Advances `tracked` to episodes the ledger says were already delivered.
+///
+/// A tick works from a snapshot that can be a minute stale. When the ledger
+/// refuses an episode because it is already final, that refusal is proof the
+/// snapshot is behind, and writing it back unchanged would undo the delivery
+/// another invocation committed. Returns how many entries moved.
+fn reconcile_already_delivered(tracked: &mut [TrackedAnime], keys: &[String]) -> usize {
+    let mut advanced = 0;
+    for key in keys {
+        let Some((anime_id, episode)) = ledger::parse_key(key) else {
+            continue;
+        };
+        if let Some(item) = tracked.iter_mut().find(|item| item.id == anime_id) {
+            if episode > item.last_episode {
+                item.last_episode = episode;
+                advanced += 1;
+            }
+        }
+    }
+    advanced
+}
+
 /// Announces only the releases no other invocation has already claimed.
 ///
 /// The watchlist snapshot a tick works from can be up to a minute stale, so the
@@ -673,15 +695,24 @@ async fn deliver_unclaimed_releases(
         .collect();
 
     let (to_send, managed_by_ledger) = match ledger::claim(env, &wanted).await {
-        Ok(granted) => {
-            if granted.is_empty() {
+        Ok(claim) => {
+            // An episode refused as already-final was delivered by another
+            // invocation, which means this snapshot is behind for that title.
+            let reconciled = reconcile_already_delivered(tracked, &claim.already_final);
+            if reconciled > 0 {
+                worker::console_log!(
+                    "Reconciled {} episode(s) already announced by another invocation",
+                    reconciled
+                );
+            }
+            if claim.granted.is_empty() {
                 worker::console_log!(
                     "All {} matched releases were already announced by another invocation",
                     releases.len()
                 );
                 return Ok(0);
             }
-            let allowed: std::collections::HashSet<&String> = granted.iter().collect();
+            let allowed: std::collections::HashSet<&String> = claim.granted.iter().collect();
             (
                 releases
                     .iter()
@@ -727,19 +758,25 @@ async fn deliver_unclaimed_releases(
             .map(|rel| ledger::key(&rel.anime_id, rel.episode))
             .filter(|key| !delivered_keys.contains(key))
             .collect();
-        if let Err(e) = ledger::commit(env, &delivered_keys).await {
-            worker::console_error!("Failed to commit ledger entries: {:?}", e);
+        // An empty commit is a wasted round trip and storage write.
+        if !delivered_keys.is_empty() {
+            if let Err(e) = ledger::commit(env, &delivered_keys).await {
+                worker::console_error!("Failed to commit ledger entries: {:?}", e);
+            }
         }
         if !undelivered.is_empty() {
             let _ = ledger::release(env, &undelivered).await;
         }
     }
 
-    if apply_delivered_episodes(tracked, &delivered) > 0 {
-        if let Ok(json_str) = serde_json::to_string(tracked) {
-            if let Ok(put) = kv.put("tracked_anime", json_str) {
-                let _ = put.execute().await;
-            }
+    apply_delivered_episodes(tracked, &delivered);
+
+    // Written unconditionally once a delivery happened: the snapshot may have been
+    // reconciled forward above, and skipping that write is what let a stale copy
+    // roll a committed episode back.
+    if let Ok(json_str) = serde_json::to_string(tracked) {
+        if let Ok(put) = kv.put("tracked_anime", json_str) {
+            let _ = put.execute().await;
         }
     }
 
@@ -959,14 +996,14 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             // against duplicate cards is not actually in force.
             let canary = vec![ledger::key("__selftest", Date::now().as_millis() as u32)];
             let first = match ledger::claim(&ctx.env, &canary).await {
-                Ok(granted) => granted.len(),
+                Ok(claim) => claim.granted.len(),
                 Err(e) => {
                     worker::console_error!("Ledger selftest claim failed: {:?}", e);
                     return Response::error("Ledger unavailable", 503);
                 }
             };
             let second = match ledger::claim(&ctx.env, &canary).await {
-                Ok(granted) => granted.len(),
+                Ok(claim) => claim.granted.len(),
                 Err(e) => {
                     worker::console_error!("Ledger selftest re-claim failed: {:?}", e);
                     return Response::error("Ledger unavailable", 503);
@@ -1304,6 +1341,53 @@ mod match_tests {
             0,
             "replaying the same delivery must be idempotent"
         );
+    }
+
+    /// Review finding on #44: a tick that delivers one title must not write its
+    /// stale copy of another title back over an episode somebody else already
+    /// committed. Without reconciliation the episode would be re-checked against
+    /// the ledger on every tick for the whole retention window, and the watchlist
+    /// in KV would never catch up.
+    #[test]
+    fn a_deduped_episode_is_reconciled_before_the_watchlist_is_written() {
+        let mut list = vec![
+            tracked("psyren", "Psyren", 3),
+            tracked("ao-no-hako-s2", "Ao no Hako Season 2", 2),
+        ];
+
+        // Another invocation delivered Psyren ep 4; this tick's snapshot predates it.
+        let refused = vec![ledger::key("psyren", 4)];
+        assert_eq!(reconcile_already_delivered(&mut list, &refused), 1);
+        assert_eq!(list[0].last_episode, 4, "the snapshot catches up");
+
+        // This tick delivers a different title, then writes the whole list back.
+        let other = EpisodeRelease {
+            anime_id: "ao-no-hako-s2".to_string(),
+            title: "Ao no Hako Season 2".to_string(),
+            episode: 3,
+            source: "Samehadaku API".to_string(),
+            url: "https://example.test/ep".to_string(),
+            thumbnail_url: None,
+            image_url: None,
+        };
+        apply_delivered_episodes(&mut list, std::slice::from_ref(&other));
+
+        assert_eq!(
+            list[0].last_episode, 4,
+            "the committed episode survives the write instead of rolling back to 3"
+        );
+        assert_eq!(list[1].last_episode, 3);
+    }
+
+    #[test]
+    fn reconciling_never_moves_a_watchlist_entry_backwards() {
+        let mut list = vec![tracked("psyren", "Psyren", 9)];
+        // A ledger record for an older episode must not undo later progress.
+        assert_eq!(
+            reconcile_already_delivered(&mut list, &[ledger::key("psyren", 4)]),
+            0
+        );
+        assert_eq!(list[0].last_episode, 9);
     }
 
     /// Two invocations that read the watchlist before either commits will both
