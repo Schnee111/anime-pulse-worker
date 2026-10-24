@@ -106,12 +106,9 @@ pub async fn fetch_series(series_url: &str) -> Result<OtakudesuRelease> {
     let headers = Headers::new();
     headers.set("User-Agent", BROWSER_UA)?;
     headers.set("Accept", "text/html,application/xhtml+xml")?;
-    // Ask for gzip explicitly. Workers adds its own Accept-Encoding to
-    // subrequests and that list now includes zstd, which otakudesu.blog honours
-    // by replying `content-encoding: zstd` - a body the runtime does not decode
-    // (`cloudflare/workerd#6836` is open). gzip is decoded by every runtime
-    // version, so pinning it keeps the body readable.
-    headers.set("Accept-Encoding", "gzip")?;
+    // Leave Accept-Encoding unset: the origin returns a decoded body for every
+    // value measured from a Worker, so the body is verified by magic number
+    // below instead of by header guessing.
     init.with_headers(headers);
 
     let request = Request::new_with_init(series_url, &init)?;
