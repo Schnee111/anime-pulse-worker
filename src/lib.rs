@@ -300,6 +300,9 @@ const TELEGRAM_LAST_CHECK_KEY: &str = "telegram_last_check";
 /// KV key holding the epoch-millis stamp of the last Otakudesu sweep.
 const OTAKUDESU_LAST_CHECK_KEY: &str = "otakudesu_last_check";
 
+/// How many distinct failure reasons one sweep writes to the log.
+const MAX_LOGGED_FAILURES: usize = 4;
+
 /// Minimum gap between Otakudesu series sweeps.
 ///
 /// A sweep is one request per tracked title (20 today, capped at 5 in flight),
@@ -469,6 +472,7 @@ async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> Vec<ReleaseCandidate> {
     let mut candidates = Vec::new();
     let mut fetched = 0usize;
     let mut failed = 0usize;
+    let mut reasons: Vec<String> = Vec::new();
 
     for (id, title, outcome) in results {
         match outcome {
@@ -482,7 +486,15 @@ async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> Vec<ReleaseCandidate> {
                     anime_id: Some(id),
                 });
             }
-            Err(_) => failed += 1,
+            Err(e) => {
+                failed += 1;
+                // Keep the reason, de-duplicated and capped: a total outage used
+                // to log only a count, which made a dead source look healthy.
+                let reason = e.to_string();
+                if reasons.len() < MAX_LOGGED_FAILURES && !reasons.contains(&reason) {
+                    reasons.push(reason);
+                }
+            }
         }
     }
 
@@ -491,6 +503,9 @@ async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> Vec<ReleaseCandidate> {
         fetched,
         failed
     );
+    if !reasons.is_empty() {
+        worker::console_log!("Otakudesu failure reasons: {}", reasons.join(" | "));
+    }
     candidates
 }
 
