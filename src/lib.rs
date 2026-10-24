@@ -304,12 +304,33 @@ const OTAKUDESU_LAST_CHECK_KEY: &str = "otakudesu_last_check";
 /// How many distinct failure reasons one sweep writes to the log.
 const MAX_LOGGED_FAILURES: usize = 4;
 
+/// Period of the external scheduler that drives `/trigger` from the VPS
+/// (`*/15 * * * * sleep 25 && /home/ubuntu/scripts/anime-pulse-trigger.sh`).
+const EXTERNAL_TRIGGER_PERIOD_MS: i64 = 15 * 60 * 1000;
+
 /// Minimum gap between Otakudesu series sweeps.
 ///
-/// A sweep is one request per tracked title (20 today, capped at 5 in flight),
-/// which is far more expensive than a single JSON poll, so it runs on the same
-/// 15 minute cadence as the Telegram bridge rather than every tick.
-const OTAKUDESU_INTERVAL_MS: i64 = 15 * 60 * 1000;
+/// A sweep is one request per tracked title (22 today, capped at 5 in flight),
+/// which is far more expensive than a single JSON poll, so it is throttled
+/// rather than run every tick.
+///
+/// 14 minutes, not 15, because the sweep is now driven by an external scheduler
+/// that fires every 15 minutes (`*/15 * * * * sleep 25 && ...` on the VPS). With
+/// both periods equal, a trigger arriving even a second earlier than the previous
+/// one would find the window closed, so honest runs would skip and the effective
+/// cadence would silently halve. One minute of headroom makes every trigger due.
+const OTAKUDESU_INTERVAL_MS: i64 = 14 * 60 * 1000;
+
+// Compile-time, because this is a structural relationship between the Worker and
+// the external scheduler, not a value to sanity check at runtime.
+const _: () = assert!(
+    OTAKUDESU_INTERVAL_MS < EXTERNAL_TRIGGER_PERIOD_MS,
+    "throttle must expire before the next external trigger, or honest runs skip",
+);
+const _: () = assert!(
+    EXTERNAL_TRIGGER_PERIOD_MS - OTAKUDESU_INTERVAL_MS >= 60_000,
+    "leave at least a minute of headroom for scheduler jitter",
+);
 
 /// True when the stage guarded by `key` is due for another run.
 ///
