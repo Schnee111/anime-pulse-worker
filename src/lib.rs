@@ -994,7 +994,13 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             // Claims one canary key twice through the real Durable Object. The
             // second claim must be refused, otherwise the dedupe that protects
             // against duplicate cards is not actually in force.
-            let canary = vec![ledger::key("__selftest", Date::now().as_millis() as u32)];
+            //
+            // The millisecond stamp goes in the id, never through a u32 cast: the
+            // epoch in millis is ~1.7e12, so `as u32` saturates to 4294967295 and
+            // every selftest would collide with the previous one inside the pending
+            // TTL, reporting a false failure (review finding on #44).
+            let canary_id = format!("__selftest-{}", Date::now().as_millis());
+            let canary = vec![ledger::key(&canary_id, 0)];
             let first = match ledger::claim(&ctx.env, &canary).await {
                 Ok(claim) => claim.granted.len(),
                 Err(e) => {
@@ -1377,6 +1383,30 @@ mod match_tests {
             "the committed episode survives the write instead of rolling back to 3"
         );
         assert_eq!(list[1].last_episode, 3);
+    }
+
+    #[test]
+    fn selftest_canary_ids_are_unique_per_millisecond() {
+        // Mirrors the endpoint: the timestamp belongs in the id, because a u32 cast
+        // of epoch millis saturates and freezes the canary.
+        let a = ledger::key(&format!("__selftest-{}", 1_792_847_000_001u64), 0);
+        let b = ledger::key(&format!("__selftest-{}", 1_792_847_000_002u64), 0);
+        assert_ne!(a, b, "two selftests must not share a canary key");
+        assert_eq!(
+            ledger::parse_key(&a),
+            Some(("__selftest-1792847000001".to_string(), 0)),
+            "the id survives the round trip, so the ledger can reconcile it"
+        );
+        // The cast the endpoint avoids: `Date::now().as_millis()` is f64, and a
+        // float-to-int cast saturates rather than truncating, so every run collapses
+        // onto the same canary. An integer cast would have truncated instead, which
+        // is how this was missed.
+        let millis = 1_792_847_000_001f64;
+        assert_eq!(millis as u32, u32::MAX, "f64 to u32 saturates");
+        assert_eq!(
+            1_792_847_000_001u64 as u32, 1_845_637_569u32,
+            "u64 to u32 truncates: a different failure mode, not the one to guard against"
+        );
     }
 
     #[test]
