@@ -25,12 +25,14 @@ pub fn tokens_match(expected: &str, presented: &str) -> bool {
     let a = expected.as_bytes();
     let b = presented.as_bytes();
 
-    let mut diff = (a.len() ^ b.len()) as u16;
+    // `usize` throughout: narrowing the accumulator to u16 would let a length
+    // difference that happens to be a multiple of 65536 fold to zero.
+    let mut diff = a.len() ^ b.len();
     let longest = a.len().max(b.len());
     for i in 0..longest {
         let x = a.get(i).copied().unwrap_or(0);
         let y = b.get(i).copied().unwrap_or(0);
-        diff |= (x ^ y) as u16;
+        diff |= (x ^ y) as usize;
     }
     diff == 0
 }
@@ -100,23 +102,32 @@ pub fn require(req: &Request, env: &Env) -> std::result::Result<(), Response> {
         Some(presented) if tokens_match(expected.trim(), &presented) => Ok(()),
         Some(_) => {
             worker::console_warn!("Rejected mutating route: wrong token");
-            Err(Response::error("Unauthorized", 401).unwrap_or_else(|_| fallback(401)))
+            Err(denial(401, "Unauthorized"))
         }
         None => {
             worker::console_warn!("Rejected mutating route: no token presented");
-            Err(Response::error("Unauthorized", 401).unwrap_or_else(|_| fallback(401)))
+            Err(denial(401, "Unauthorized"))
         }
     }
 }
 
-fn unavailable() -> Response {
-    Response::error("Endpoint not configured", 503).unwrap_or_else(|_| fallback(503))
+/// Builds a denial response without going through a fallible constructor.
+///
+/// `Response::error` returns a `Result`, and the obvious fallback -
+/// `Response::ok` - defaults to status 200, i.e. a denial that looks like
+/// success. `ResponseBuilder::fixed` is infallible and carries the status, so
+/// the hardening path cannot fail open.
+fn denial(status: u16, message: &str) -> Response {
+    ResponseBuilder::new()
+        .with_status(status)
+        .with_header("Content-Type", "text/plain; charset=utf-8")
+        .ok()
+        .map(|builder| builder.fixed(message.as_bytes().to_vec()))
+        .unwrap_or_else(|| ResponseBuilder::new().with_status(status).fixed(Vec::new()))
 }
 
-fn fallback(status: u16) -> Response {
-    let mut resp = Response::ok(format!("status {status}")).unwrap();
-    let _ = resp.headers_mut().set("Content-Type", "text/plain");
-    resp
+fn unavailable() -> Response {
+    denial(503, "Endpoint not configured")
 }
 
 #[cfg(test)]
