@@ -499,13 +499,38 @@ fn group_failure_reason(reason: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// What one Otakudesu sweep actually achieved.
+///
+/// The caller needs `unavailable` to tell a sweep that ran and failed apart from
+/// one the throttle skipped: both are cheap, and the external scheduler used to
+/// infer the difference from wall-clock duration because nothing else was
+/// reported. A fast-failing sweep was therefore indistinguishable from a skipped
+/// one, and the failure was invisible (issue #45).
+struct SweepOutcome {
+    candidates: Vec<ReleaseCandidate>,
+    fetched: usize,
+    unavailable: usize,
+    ran: bool,
+}
+
+impl SweepOutcome {
+    fn skipped() -> Self {
+        Self {
+            candidates: Vec::new(),
+            fetched: 0,
+            unavailable: 0,
+            ran: false,
+        }
+    }
+}
+
 /// Sweeps every tracked series page on Otakudesu.
 ///
 /// Concurrency is capped at 5: Workers Free allows only 6 simultaneous outgoing
 /// connections per invocation, so 20 series must never be fired at once. Each
 /// candidate is bound to its tracked id, because the series URL came from that
 /// entry and re-deriving a title would only add matching risk.
-async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> Vec<ReleaseCandidate> {
+async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> SweepOutcome {
     use futures_util::stream::{self, StreamExt};
 
     let targets: Vec<(String, String, String)> = tracked
@@ -515,7 +540,12 @@ async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> Vec<ReleaseCandidate> {
         .collect();
 
     if targets.is_empty() {
-        return Vec::new();
+        return SweepOutcome {
+            candidates: Vec::new(),
+            fetched: 0,
+            unavailable: 0,
+            ran: true,
+        };
     }
 
     let results =
@@ -565,7 +595,12 @@ async fn sweep_otakudesu(tracked: &[TrackedAnime]) -> Vec<ReleaseCandidate> {
     if !reasons.is_empty() {
         worker::console_log!("Otakudesu failure reasons: {}", reasons.join(" | "));
     }
-    candidates
+    SweepOutcome {
+        candidates,
+        fetched,
+        unavailable: failed,
+        ran: true,
+    }
 }
 
 /// Matches candidates against the watchlist, advancing `last_episode`.
@@ -1062,12 +1097,25 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
             let otakudesu_started = profile::now_ms();
             let mut candidates = sources.candidates;
-            if throttle_due(&kv, OTAKUDESU_LAST_CHECK_KEY, OTAKUDESU_INTERVAL_MS).await {
+            let sweep = if throttle_due(&kv, OTAKUDESU_LAST_CHECK_KEY, OTAKUDESU_INTERVAL_MS).await
+            {
                 mark_throttled(&kv, OTAKUDESU_LAST_CHECK_KEY).await;
-                candidates.extend(sweep_otakudesu(&tracked).await);
+                sweep_otakudesu(&tracked).await
             } else {
                 worker::console_log!("Otakudesu sweep skipped, next window not reached");
+                SweepOutcome::skipped()
+            };
+            // Reported in the response, not only in the log: the external scheduler
+            // has to distinguish a skipped sweep from a sweep that ran and failed,
+            // and it previously had to guess that from wall-clock duration.
+            if sweep.ran && sweep.unavailable > 0 {
+                worker::console_log!(
+                    "Otakudesu sweep degraded: {} read, {} unavailable",
+                    sweep.fetched,
+                    sweep.unavailable
+                );
             }
+            candidates.extend(sweep.candidates);
             profile.record(Stage::Otakudesu, otakudesu_started, profile::now_ms());
 
             let matching_started = profile::now_ms();
@@ -1111,8 +1159,8 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             profile.log();
             let profile_json = serde_json::to_string(&profile).unwrap_or_else(|_| "{}".to_string());
             let mut resp = Response::ok(format!(
-                r#"{{"triggered":true,"new_releases":{},"profile":{}}}"#,
-                count, profile_json
+                r#"{{"triggered":true,"new_releases":{},"otakudesu":{{"ran":{},"fetched":{},"unavailable":{}}},"profile":{}}}"#,
+                count, sweep.ran, sweep.fetched, sweep.unavailable, profile_json
             ))?;
             resp.headers_mut().set("Content-Type", "application/json")?;
             Ok(resp)
