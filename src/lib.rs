@@ -728,6 +728,26 @@ struct DeliveryOutcome {
     already_announced: usize,
 }
 
+/// Builds the `/trigger` reply.
+///
+/// The three counts are reported separately because they answer different
+/// questions: `matched` says the sources produced something, `delivered` says a
+/// card reached Discord, and `already_announced` says the ledger refused a
+/// duplicate. Collapsing them into one number previously made a refused
+/// duplicate look like a fresh announcement.
+fn trigger_response(outcome: &DeliveryOutcome, sweep: &SweepOutcome, profile_json: &str) -> String {
+    format!(
+        r#"{{"triggered":true,"matched":{},"delivered":{},"already_announced":{},"otakudesu":{{"ran":{},"fetched":{},"unavailable":{}}},"profile":{}}}"#,
+        outcome.matched,
+        outcome.delivered,
+        outcome.already_announced,
+        sweep.ran,
+        sweep.fetched,
+        sweep.unavailable,
+        profile_json
+    )
+}
+
 impl DeliveryOutcome {
     /// Episodes that matched but reached no channel and were not refused, i.e.
     /// the ones that genuinely stay queued for the next tick.
@@ -1192,7 +1212,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
             let otakudesu_started = profile::now_ms();
             let mut candidates = sources.candidates;
-            let sweep = if throttle_due(&kv, OTAKUDESU_LAST_CHECK_KEY, OTAKUDESU_INTERVAL_MS).await
+            let mut sweep = if throttle_due(&kv, OTAKUDESU_LAST_CHECK_KEY, OTAKUDESU_INTERVAL_MS).await
             {
                 mark_throttled(&kv, OTAKUDESU_LAST_CHECK_KEY).await;
                 sweep_otakudesu(&tracked).await
@@ -1210,14 +1230,21 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     sweep.unavailable
                 );
             }
-            candidates.extend(sweep.candidates);
+            candidates.extend(std::mem::take(&mut sweep.candidates));
             profile.record(Stage::Otakudesu, otakudesu_started, profile::now_ms());
 
             let matching_started = profile::now_ms();
             let releases = match_releases(&tracked, candidates);
             profile.record(Stage::Matching, matching_started, profile::now_ms());
 
-            let count = releases.len();
+            // `matched` is not `delivered`: a release the ledger refuses as already
+            // announced still matched, so reporting the match count under a name
+            // that reads like "cards sent" hides a refused duplicate.
+            let mut outcome = DeliveryOutcome {
+                matched: releases.len(),
+                delivered: 0,
+                already_announced: 0,
+            };
             if !releases.is_empty() {
                 let webhook_url = match ctx.env.secret("DISCORD_WEBHOOK_URL") {
                     Ok(sec) => sec.to_string(),
@@ -1235,7 +1262,10 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 )
                 .await
                 {
-                    Ok(outcome) => outcome.log_incomplete(),
+                    Ok(delivered) => {
+                    delivered.log_incomplete();
+                    outcome = delivered;
+                }
                     Err(e) => {
                         worker::console_error!("Failed to send webhook: {:?}", e);
                         return Response::error("Failed to deliver notification", 502);
@@ -1245,10 +1275,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             profile.total = profile::now_ms().saturating_sub(tick_started);
             profile.log();
             let profile_json = serde_json::to_string(&profile).unwrap_or_else(|_| "{}".to_string());
-            let mut resp = Response::ok(format!(
-                r#"{{"triggered":true,"new_releases":{},"otakudesu":{{"ran":{},"fetched":{},"unavailable":{}}},"profile":{}}}"#,
-                count, sweep.ran, sweep.fetched, sweep.unavailable, profile_json
-            ))?;
+            let mut resp = Response::ok(trigger_response(&outcome, &sweep, &profile_json))?;
             resp.headers_mut().set("Content-Type", "application/json")?;
             Ok(resp)
         })
@@ -1518,6 +1545,27 @@ mod match_tests {
             "the committed episode survives the write instead of rolling back to 3"
         );
         assert_eq!(list[1].last_episode, 3);
+    }
+
+    #[test]
+    fn the_trigger_reply_keeps_matched_and_delivered_apart() {
+        let outcome = DeliveryOutcome {
+            matched: 1,
+            delivered: 0,
+            already_announced: 1,
+        };
+        let sweep = SweepOutcome {
+            candidates: Vec::new(),
+            fetched: 22,
+            unavailable: 0,
+            ran: true,
+        };
+        let parsed: serde_json::Value =
+            serde_json::from_str(&trigger_response(&outcome, &sweep, "{}")).expect("valid JSON");
+        assert_eq!(parsed["matched"], 1);
+        assert_eq!(parsed["delivered"], 0);
+        assert_eq!(parsed["already_announced"], 1);
+        assert_eq!(parsed["otakudesu"]["fetched"], 22);
     }
 
     #[test]
