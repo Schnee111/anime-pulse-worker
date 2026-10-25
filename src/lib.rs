@@ -1113,6 +1113,46 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             resp.headers_mut().set("Content-Type", "application/json")?;
             Ok(resp)
         })
+        .post_async("/ledger-forget", |mut req, ctx| async move {
+            if let Err(denied) = auth::require(&req, &ctx.env) {
+                return Ok(denied);
+            }
+            // Repair path for a wrong record: an episode announced in error keeps a
+            // Final entry, and a Final blocks the correct episode forever. The
+            // caller must also correct the watchlist (see `parse_key`), so this
+            // deliberately does not touch KV.
+            let keys: Vec<String> = match req.json().await {
+                Ok(list) => list,
+                Err(e) => {
+                    worker::console_error!("ledger-forget bad body: {:?}", e);
+                    return Response::error("Expected a JSON array of keys", 400);
+                }
+            };
+            if keys.is_empty() {
+                return Response::error("Empty key list", 400);
+            }
+            // An operator repairing a bad announcement is typing ids by hand, so a
+            // typo must fail here rather than silently report "nothing to forget"
+            // and leave the episode blocked. The cap keeps one call bounded.
+            if keys.len() > 32 {
+                return Response::error("At most 32 keys per call", 400);
+            }
+            if let Some(bad) = keys.iter().find(|k| ledger::parse_key(k).is_none()) {
+                return Response::error(format!("Malformed key: {bad}"), 400);
+            }
+            match ledger::forget(&ctx.env, &keys).await {
+                Ok(removed) => {
+                    worker::console_log!("Forgot {} ledger entr(ies)", removed);
+                    let mut resp = Response::ok(format!(r#"{{"forgotten":{removed}}}"#))?;
+                    resp.headers_mut().set("Content-Type", "application/json")?;
+                    Ok(resp)
+                }
+                Err(e) => {
+                    worker::console_error!("ledger-forget failed: {:?}", e);
+                    Response::error("Ledger unavailable", 503)
+                }
+            }
+        })
         .post_async("/trigger", |req, ctx| async move {
             if let Err(denied) = auth::require(&req, &ctx.env) {
                 return Ok(denied);

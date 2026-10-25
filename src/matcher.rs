@@ -169,6 +169,23 @@ mod tests {
         assert_eq!(ep2, 1);
     }
 
+    /// Regression: before the strict-majority rule, a Sokuja post titled "Koori
+    /// no Jouheki Season 2" matched the tracked entry "Ao no Hako Season 2" on
+    /// `{no, season, 2}` alone and announced a Koori episode as an Ao no Hako
+    /// card. That single false positive advanced Ao no Hako to the wrong episode
+    /// and suppressed the real one until the record was repaired by hand.
+    #[test]
+    fn koori_no_jouheki_does_not_match_ao_no_hako() {
+        assert!(!matches_tracked(
+            "Ao no Hako Season 2",
+            "Koori no Jouheki Season 2"
+        ));
+        assert!(!matches_tracked(
+            "Koori no Jouheki Season 2",
+            "Ao no Hako Season 2"
+        ));
+    }
+
     #[test]
     fn test_matches_tracked() {
         assert!(matches_tracked(
