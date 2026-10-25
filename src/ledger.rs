@@ -155,6 +155,23 @@ impl Ledger {
         }
     }
 
+    /// Deletes entries regardless of state, for repairing a wrong record.
+    ///
+    /// Needed because a `Final` is otherwise permanent: if an episode was
+    /// announced in error (a mis-matched source title advancing the watchlist),
+    /// the correct episode can never be announced afterwards. The scheduler and
+    /// the watchlist both have to be corrected together, and this is the only way
+    /// to release the ledger half.
+    pub fn forget(&mut self, keys: &[String]) -> usize {
+        let mut removed = 0;
+        for key in keys {
+            if self.entries.remove(key).is_some() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// Removes finals past retention and pendings past their TTL.
     pub fn prune(&mut self, now_ms: i64) {
         self.entries.retain(|_, entry| match entry.state {
@@ -210,6 +227,14 @@ impl DurableObject for DeliveryLedger {
                     already_final: Vec::new(),
                 }
             }
+            "forget" => {
+                let removed = ledger.forget(&keys);
+                storage.put("ledger", &ledger).await?;
+                Claim {
+                    granted: vec![format!("forgotten:{removed}")],
+                    already_final: Vec::new(),
+                }
+            }
             other => {
                 return Response::error(format!("unknown ledger action: {other}"), 404);
             }
@@ -250,6 +275,17 @@ pub async fn commit(env: &Env, keys: &[String]) -> Result<Claim> {
 /// Drops pending claims whose delivery failed, so the next tick retries them.
 pub async fn release(env: &Env, keys: &[String]) -> Result<Claim> {
     call(env, "release", keys).await
+}
+
+/// Deletes ledger entries regardless of state. Returns how many were removed.
+pub async fn forget(env: &Env, keys: &[String]) -> Result<usize> {
+    let claim = call(env, "forget", keys).await?;
+    Ok(claim
+        .granted
+        .first()
+        .and_then(|s| s.strip_prefix("forgotten:"))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0))
 }
 
 /// Splits `anime_id:episode` back into its parts.
@@ -429,6 +465,30 @@ mod tests {
             "already delivered episodes are filtered out of the batch"
         );
         assert_eq!(claim.already_final, keys(&[("psyren", 3)]));
+    }
+
+    #[test]
+    fn forget_releases_a_wrongly_recorded_delivery() {
+        let mut ledger = Ledger::default();
+        let wrong = keys(&[("ao-no-hako-s2", 4)]);
+        ledger.claim(&wrong, 1_000);
+        ledger.commit(&wrong, 1_000);
+        assert!(ledger.claim(&wrong, 2_000).granted.is_empty());
+
+        // A mis-matched source title announced this episode before it aired, so the
+        // record has to be removable or the real episode is suppressed forever.
+        assert_eq!(ledger.forget(&wrong), 1);
+        assert_eq!(
+            ledger.claim(&wrong, 3_000).granted,
+            wrong,
+            "after a repair the correct episode must be announceable"
+        );
+    }
+
+    #[test]
+    fn forget_is_idempotent_for_unknown_keys() {
+        let mut ledger = Ledger::default();
+        assert_eq!(ledger.forget(&keys(&[("never-tracked", 1)])), 0);
     }
 
     #[test]
