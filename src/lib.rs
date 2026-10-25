@@ -1131,6 +1131,15 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             if keys.is_empty() {
                 return Response::error("Empty key list", 400);
             }
+            // An operator repairing a bad announcement is typing ids by hand, so a
+            // typo must fail here rather than silently report "nothing to forget"
+            // and leave the episode blocked. The cap keeps one call bounded.
+            if keys.len() > 32 {
+                return Response::error("At most 32 keys per call", 400);
+            }
+            if let Some(bad) = keys.iter().find(|k| ledger::parse_key(k).is_none()) {
+                return Response::error(format!("Malformed key: {bad}"), 400);
+            }
             match ledger::forget(&ctx.env, &keys).await {
                 Ok(removed) => {
                     worker::console_log!("Forgot {} ledger entr(ies)", removed);

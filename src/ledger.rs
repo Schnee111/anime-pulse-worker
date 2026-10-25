@@ -229,7 +229,9 @@ impl DurableObject for DeliveryLedger {
             }
             "forget" => {
                 let removed = ledger.forget(&keys);
-                storage.put("ledger", &ledger).await?;
+                if removed > 0 {
+                    storage.put("ledger", &ledger).await?;
+                }
                 Claim {
                     granted: vec![format!("forgotten:{removed}")],
                     already_final: Vec::new(),
