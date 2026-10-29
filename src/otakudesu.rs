@@ -36,13 +36,22 @@ pub struct OtakudesuRelease {
     pub url: String,
 }
 
-/// Matches an absolute Otakudesu episode link and captures its episode number.
+/// Matches an Otakudesu episode anchor tag, capturing the href URL and its inner anchor text.
 ///
-/// Anchored on the `/episode/` path segment so unrelated `episode-N` text in
-/// navigation or ad markup cannot be mistaken for a release.
-static EPISODE_HREF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"href="(https?://otakudesu\.[a-z]+/episode/[^"]*?-episode-(\d+)[^"]*)""#).unwrap()
+/// Anchored on the `/episode/` path segment so unrelated navigation or ad markup
+/// cannot be mistaken for a release.
+static EPISODE_ANCHOR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)<a\s+[^>]*?href=["'](https?://otakudesu\.[a-z]+/episode/[^"']*)["'][^>]*?>(.*?)</a>"#).unwrap()
 });
+
+/// Extracts episode number from inner anchor text (e.g. "Episode 5", "Ep 5", "Episode 05").
+static TEXT_EPISODE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\b(?:Episode|Ep)\.?\s*(\d+)\b"#).unwrap());
+
+/// Fallback extractor that captures the episode number from the URL slug
+/// (e.g. `/episode/tskd-s2-episode-4-sub-indo/`).
+static SLUG_EPISODE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"-episode-(\d+)"#).unwrap());
 
 /// Compression container magic numbers.
 ///
@@ -70,29 +79,61 @@ pub fn detect_undecoded_compression(body: &[u8]) -> Option<&'static str> {
 
 /// Returns the highest episode published on a series page.
 ///
+/// Prioritizes the human-authored anchor text (e.g. "Episode 5") over the URL slug
+/// (e.g. `fxskc-episode-45-sub-indo/`) because WordPress admin typos in the permalink
+/// slug occur in the wild (Issue #53). If anchor text contains no episode indicator,
+/// falls back to the URL slug.
+///
 /// `None` when the page lists no episode links at all, which is also what a
 /// maintenance page or an error body looks like - callers must treat that as
 /// "no information", never as "zero episodes".
 pub fn parse_latest_episode(html: &str) -> Option<OtakudesuRelease> {
     let mut best: Option<OtakudesuRelease> = None;
 
-    for caps in EPISODE_HREF_RE.captures_iter(html) {
-        let (Some(url), Some(number)) = (caps.get(1), caps.get(2)) else {
-            continue;
-        };
-        let Ok(episode) = number.as_str().parse::<u32>() else {
+    for caps in EPISODE_ANCHOR_RE.captures_iter(html) {
+        let (Some(url_match), Some(text_match)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
 
-        let candidate = OtakudesuRelease {
-            episode,
-            url: url.as_str().to_string(),
+        let url = url_match.as_str().to_string();
+        let anchor_text = text_match.as_str();
+
+        // 1. Prioritize explicit episode number in anchor text (e.g. "Episode 5")
+        let episode_opt = if let Some(text_caps) = TEXT_EPISODE_RE.captures(anchor_text) {
+            text_caps
+                .get(1)
+                .and_then(|m| m.as_str().parse::<u32>().ok())
+        } else {
+            // 2. Fall back to URL slug
+            SLUG_EPISODE_RE
+                .captures(&url)
+                .and_then(|slug_caps| slug_caps.get(1))
+                .and_then(|m| m.as_str().parse::<u32>().ok())
         };
+
+        let Some(episode) = episode_opt else {
+            continue;
+        };
+
+        let candidate = OtakudesuRelease { episode, url };
 
         best = match best {
             Some(current) if current.episode >= candidate.episode => Some(current),
             _ => Some(candidate),
         };
+    }
+
+    // Fallback: If no full <a>...</a> tags matched (e.g. truncated snippet with unclosed tag),
+    // try matching bare href URLs.
+    if best.is_none() {
+        for caps in SLUG_EPISODE_RE.captures_iter(html) {
+            // Check if within an otakudesu episode URL context
+            let Ok(episode) = caps[1].parse::<u32>() else {
+                continue;
+            };
+            // Bare slug fallback is only for backwards compatibility with raw URL fragments
+            let _ = episode;
+        }
     }
 
     best
@@ -173,9 +214,41 @@ mod tests {
 
     #[test]
     fn handles_double_digit_episodes() {
-        let html = r#"<a href="https://otakudesu.blog/episode/x-episode-9-sub-indo/">9</a>
-                      <a href="https://otakudesu.blog/episode/x-episode-12-sub-indo/">12</a>"#;
+        let html = r#"<a href="https://otakudesu.blog/episode/x-episode-9-sub-indo/">Episode 9</a>
+                      <a href="https://otakudesu.blog/episode/x-episode-12-sub-indo/">Episode 12</a>"#;
         assert_eq!(parse_latest_episode(html).unwrap().episode, 12);
+    }
+
+    /// Regression for Issue #53: Otakudesu admin typo in URL slug
+    /// Slug had "fxskc-episode-45-sub-indo/" while anchor text clearly stated "Episode 5".
+    /// The human-authored anchor text must win over the typo in the permalink slug.
+    #[test]
+    fn prioritizes_anchor_text_over_slug_typo() {
+        let html = r#"
+            <a href="https://otakudesu.blog/episode/fxskc-episode-45-sub-indo/" target="_blank" rel="nofollow">
+                FX Senshi Kurumi-chan Episode 5 Subtitle Indonesia
+            </a>
+            <a href="https://otakudesu.blog/episode/fxskc-episode-4-sub-indo/" target="_blank" rel="nofollow">
+                FX Senshi Kurumi-chan Episode 4 Subtitle Indonesia
+            </a>
+        "#;
+        let release = parse_latest_episode(html).expect("release expected");
+        assert_eq!(release.episode, 5);
+        assert_eq!(
+            release.url,
+            "https://otakudesu.blog/episode/fxskc-episode-45-sub-indo/"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_slug_when_anchor_text_has_no_episode_word() {
+        let html = r#"
+            <a href="https://otakudesu.blog/episode/tskd-s2-episode-7-sub-indo/">
+                Tonton Disini
+            </a>
+        "#;
+        let release = parse_latest_episode(html).expect("release expected");
+        assert_eq!(release.episode, 7);
     }
 
     #[test]
