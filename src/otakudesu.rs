@@ -44,9 +44,9 @@ static EPISODE_ANCHOR_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?is)<a\s+[^>]*?href=["'](https?://otakudesu\.[a-z]+/episode/[^"']*)["'][^>]*?>(.*?)</a>"#).unwrap()
 });
 
-/// Extracts episode number from inner anchor text (e.g. "Episode 5", "Ep 5", "Episode 05").
+/// Extracts episode number from inner anchor text (e.g. "Episode 5", "Eps 5", "Eps. 05").
 static TEXT_EPISODE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)\b(?:Episode|Ep)\.?\s*(\d+)\b"#).unwrap());
+    LazyLock::new(|| Regex::new(r#"(?i)\b(?:Episode|Eps?)\.?\s*(\d+)\b"#).unwrap());
 
 /// Fallback extractor that captures the episode number from the URL slug
 /// (e.g. `/episode/tskd-s2-episode-4-sub-indo/`).
@@ -95,10 +95,10 @@ pub fn parse_latest_episode(html: &str) -> Option<OtakudesuRelease> {
             continue;
         };
 
-        let url = url_match.as_str().to_string();
+        let url_str = url_match.as_str();
         let anchor_text = text_match.as_str();
 
-        // 1. Prioritize explicit episode number in anchor text (e.g. "Episode 5")
+        // 1. Prioritize explicit episode number in anchor text (e.g. "Episode 5", "Eps 5")
         let episode_opt = if let Some(text_caps) = TEXT_EPISODE_RE.captures(anchor_text) {
             text_caps
                 .get(1)
@@ -106,7 +106,7 @@ pub fn parse_latest_episode(html: &str) -> Option<OtakudesuRelease> {
         } else {
             // 2. Fall back to URL slug
             SLUG_EPISODE_RE
-                .captures(&url)
+                .captures(url_str)
                 .and_then(|slug_caps| slug_caps.get(1))
                 .and_then(|m| m.as_str().parse::<u32>().ok())
         };
@@ -115,25 +115,17 @@ pub fn parse_latest_episode(html: &str) -> Option<OtakudesuRelease> {
             continue;
         };
 
-        let candidate = OtakudesuRelease { episode, url };
-
-        best = match best {
-            Some(current) if current.episode >= candidate.episode => Some(current),
-            _ => Some(candidate),
-        };
-    }
-
-    // Fallback: If no full <a>...</a> tags matched (e.g. truncated snippet with unclosed tag),
-    // try matching bare href URLs.
-    if best.is_none() {
-        for caps in SLUG_EPISODE_RE.captures_iter(html) {
-            // Check if within an otakudesu episode URL context
-            let Ok(episode) = caps[1].parse::<u32>() else {
+        // Defer String heap allocation until verified to beat current best
+        if let Some(ref current) = best {
+            if current.episode >= episode {
                 continue;
-            };
-            // Bare slug fallback is only for backwards compatibility with raw URL fragments
-            let _ = episode;
+            }
         }
+
+        best = Some(OtakudesuRelease {
+            episode,
+            url: url_str.to_string(),
+        });
     }
 
     best
@@ -238,6 +230,17 @@ mod tests {
             release.url,
             "https://otakudesu.blog/episode/fxskc-episode-45-sub-indo/"
         );
+    }
+
+    #[test]
+    fn matches_eps_abbreviation_in_anchor_text() {
+        let html = r#"
+            <a href="https://otakudesu.blog/episode/test-episode-1-sub-indo/">
+                Anime Keren Eps. 08 Sub Indo
+            </a>
+        "#;
+        let release = parse_latest_episode(html).expect("release expected");
+        assert_eq!(release.episode, 8);
     }
 
     #[test]
