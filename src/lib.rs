@@ -193,6 +193,20 @@ pub fn default_tracked_list() -> Vec<TrackedAnime> {
             thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx205909-DM0fAzNQulod.jpg".into()),
             image_url: Some("https://img.youtube.com/vi/Ex9LrBK-7hk/maxresdefault.jpg".into()),
         },
+        // Added late (issue #55): AniList 210482, RELEASING, 11 episodes planned.
+        // The fansub sources were already at Ep 7 when it joined the list (Otakudesu
+        // serves 1-7 and Samehadaku carried Ep 7), so tracking starts at Ep 8 instead
+        // of replaying the backlog into the channel. AniList still lists Ep 7 as
+        // upcoming, which is the expected source/schedule divergence: source episode
+        // numbers drive matching, never the AniList airing schedule.
+        TrackedAnime {
+            id: "jojo-steel-ball-run".into(),
+            title: "Steel Ball Run: JoJo no Kimyou na Bouken".into(),
+            last_episode: 7,
+            url: "https://otakudesu.blog/anime/jojo-steel-ball-run-sub-indo/".into(),
+            thumbnail_url: Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx210482-P1VNKbqdJ6Zj.jpg".into()),
+            image_url: Some("https://img.youtube.com/vi/jXtG_lcR9P4/maxresdefault.jpg".into()),
+        },
     ]
 }
 
@@ -1756,6 +1770,85 @@ mod match_tests {
             out.is_empty(),
             "the baseline episode must not be re-announced"
         );
+    }
+
+    /// Regression for issue #55: a title added to the code defaults must appear
+    /// even when KV is missing it, and must land at the episode that was out
+    /// when it joined, not at zero.
+    #[test]
+    fn default_list_carries_steel_ball_run_at_episode_seven() {
+        let defaults = default_tracked_list();
+        let entry = defaults
+            .iter()
+            .find(|t| t.id == "jojo-steel-ball-run")
+            .expect("Steel Ball Run must be in the default watchlist");
+        assert_eq!(entry.title, "Steel Ball Run: JoJo no Kimyou na Bouken");
+        assert_eq!(
+            entry.last_episode, 7,
+            "tracking starts at Ep 8, so the seven episodes already out must not replay"
+        );
+        assert!(entry.url.contains("jojo-steel-ball-run-sub-indo"));
+        assert!(entry.thumbnail_url.is_some());
+        assert!(entry.image_url.is_some());
+    }
+
+    /// Regression for issue #55: the live source post title must resolve to the
+    /// new entry, otherwise the watchlist addition is inert.
+    #[test]
+    fn steel_ball_run_release_title_matches_its_entry() {
+        let list = vec![tracked(
+            "jojo-steel-ball-run",
+            "Steel Ball Run: JoJo no Kimyou na Bouken",
+            7,
+        )];
+        let out = match_releases(
+            &list,
+            vec![candidate(
+                "Steel Ball Run: JoJo no Kimyou na Bouken Episode 8 Subtitle Indonesia",
+                8,
+                "Samehadaku API",
+            )],
+        );
+        assert_eq!(out.len(), 1, "episode 8 must be detected");
+        assert_eq!(out[0].anime_id, "jojo-steel-ball-run");
+        assert_eq!(out[0].episode, 8);
+
+        // Ep 7 is the baseline, so the release that was already out must stay quiet.
+        let out = match_releases(
+            &list,
+            vec![candidate(
+                "Steel Ball Run: JoJo no Kimyou na Bouken Episode 7 Subtitle Indonesia",
+                7,
+                "Samehadaku API",
+            )],
+        );
+        assert!(
+            out.is_empty(),
+            "the baseline episode must not be re-announced"
+        );
+    }
+
+    /// Regression for issue #55: `merge_tracked_defaults` must append the new
+    /// entry to a KV snapshot that predates it, without disturbing live state,
+    /// and must stay idempotent.
+    #[test]
+    fn merge_appends_steel_ball_run_without_disturbing_live_state() {
+        let mut list = vec![tracked("psyren", "Psyren", 9)];
+        merge_tracked_defaults(&mut list);
+
+        assert_eq!(
+            list[0].last_episode, 9,
+            "merging defaults must never reset a live counter"
+        );
+        let sbr = list
+            .iter()
+            .find(|t| t.id == "jojo-steel-ball-run")
+            .expect("merge must append the missing default");
+        assert_eq!(sbr.last_episode, 7);
+
+        let before = list.len();
+        merge_tracked_defaults(&mut list);
+        assert_eq!(list.len(), before, "merge must be idempotent");
     }
 
     /// Review follow-up on #35: per-series body sizes must not fill every log
